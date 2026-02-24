@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_arena.dir/link.d CMakeFiles/test_arena.dir/test_arena.c.o -o test_arena  -lm

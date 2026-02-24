@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_layout.dir/link.d CMakeFiles/test_layout.dir/test_layout.c.o -o test_layout  -lm

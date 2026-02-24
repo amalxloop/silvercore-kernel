@@ -1,0 +1,110 @@
+Start testing: Feb 24 22:03 IST
+----------------------------------------------------------
+1/5 Testing: arena
+1/5 Test: arena
+Command: "/home/kiraxploit/orchids-projects/silvercore-kernel/build/tests/test_arena"
+Directory: /home/kiraxploit/orchids-projects/silvercore-kernel/build/tests
+"arena" start time: Feb 24 22:03 IST
+Output:
+----------------------------------------------------------
+=== sc_arena tests ===
+  [PASS] arena_basic
+  [PASS] arena_types
+  [PASS] arena_temp
+  [PASS] pool_basic
+All arena tests passed.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"arena" end time: Feb 24 22:03 IST
+"arena" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/5 Testing: math
+2/5 Test: math
+Command: "/home/kiraxploit/orchids-projects/silvercore-kernel/build/tests/test_math"
+Directory: /home/kiraxploit/orchids-projects/silvercore-kernel/build/tests
+"math" start time: Feb 24 22:03 IST
+Output:
+----------------------------------------------------------
+=== sc_math tests ===
+  [PASS] vec2
+  [PASS] vec3
+  [PASS] mat4
+  [PASS] ortho
+  [PASS] lerp
+All math tests passed.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"math" end time: Feb 24 22:03 IST
+"math" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/5 Testing: layout
+3/5 Test: layout
+Command: "/home/kiraxploit/orchids-projects/silvercore-kernel/build/tests/test_layout"
+Directory: /home/kiraxploit/orchids-projects/silvercore-kernel/build/tests
+"layout" start time: Feb 24 22:03 IST
+Output:
+----------------------------------------------------------
+=== sc_layout tests ===
+  [PASS] root_fill
+  [PASS] row_equal_grow
+  [PASS] justify_center
+  [PASS] column_stack
+All layout tests passed.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"layout" end time: Feb 24 22:03 IST
+"layout" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/5 Testing: gfx
+4/5 Test: gfx
+Command: "/home/kiraxploit/orchids-projects/silvercore-kernel/build/tests/test_gfx"
+Directory: /home/kiraxploit/orchids-projects/silvercore-kernel/build/tests
+"gfx" start time: Feb 24 22:03 IST
+Output:
+----------------------------------------------------------
+[sc_gfx] backend=4  320x240
+[sc_gfx] backend=4  64x64
+[sc_gfx] backend=4  128x128
+=== sc_gfx tests ===
+  [PASS] gfx_init_shutdown
+  [PASS] gfx_resources
+  [PASS] gfx_frame_loop
+All gfx tests passed.
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"gfx" end time: Feb 24 22:03 IST
+"gfx" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/5 Testing: runtime
+5/5 Test: runtime
+Command: "/home/kiraxploit/orchids-projects/silvercore-kernel/build/tests/test_runtime"
+Directory: /home/kiraxploit/orchids-projects/silvercore-kernel/build/tests
+"runtime" start time: Feb 24 22:03 IST
+Output:
+----------------------------------------------------------
+=== sc_runtime tests ===
+  [PASS] task_queue
+  [PASS] timer
+  [PASS] clock
+All runtime tests passed.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"runtime" end time: Feb 24 22:03 IST
+"runtime" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Feb 24 22:03 IST

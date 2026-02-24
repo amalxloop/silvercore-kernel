@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/stock_dashboard.dir/link.d CMakeFiles/stock_dashboard.dir/apps/stock_dashboard/stock_dashboard.c.o -o stock_dashboard  -lm

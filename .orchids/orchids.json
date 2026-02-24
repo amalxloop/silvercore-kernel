@@ -1,0 +1,8 @@
+{
+  "projectId": "aa814118-659a-4932-9771-56431dbac4f2",
+  "createdAt": 1771949360334,
+  "templateId": "any",
+  "startupCommands": [
+    "mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DSC_SHARED=OFF && make -j$(nproc) && ctest --output-on-failure && ./stock_dashboard"
+  ]
+}
