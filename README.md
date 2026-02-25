@@ -2,13 +2,13 @@
 
 **No bridge. No GC. No compromise.**
 
-A cross-platform rendering kernel written in pure C that eliminates the JavaScript bridge entirely. Instead of running app logic through an interpreter and translating it across a JS-to-native boundary, SilverCore compiles directly to a native binary — or to WebAssembly — and drives the GPU without a runtime middleman.
+A cross-platform rendering kernel written in pure C that eliminates the JavaScript bridge entirely. Instead of running app logic through an interpreter and translating it across a JS-to-native boundary, SilverCore compiles directly to a native binary  or to WebAssembly and drives the GPU without a runtime middleman.
 
 ---
 
 ## The Problem It Solves
 
-Every major cross-platform UI framework (React Native, Flutter, Electron, Expo) has the same fundamental bottleneck: app logic lives in a managed runtime (V8, Hermes, Dart VM) and must cross a serialized bridge to reach the platform's native drawing APIs. That crossing costs CPU cycles, introduces latency spikes from garbage collection, and burns battery waiting for round-trips.
+Every major cross-platform UI framework (React Native, Flutter, Electron, Expo) has the same fundamental bottleneck: app logic lives in a managed runtime (V8, Hermes, Dart VM) and must cross a serialized bridge to reach the platform's native drawing APIs. That crossing costs CPU cycles, introduces latency spikes from garbage collection, and burns battery waiting for round trips.
 
 SilverCore removes the bridge. App logic, layout, animation, and rendering are all C code compiled into one binary. There is no interpreter, no GC pause, no bridge.
 
