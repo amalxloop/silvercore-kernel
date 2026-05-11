@@ -80,12 +80,92 @@ static int test_frame_loop(void) {
     return 0;
 }
 
+/* ===== Boundary / NULL-handling tests ===== */
+
+static int test_shutdown_null(void) {
+    /* Must not crash */
+    sc_gfx_shutdown(NULL);
+    PASS("shutdown_null");
+    return 0;
+}
+
+static int test_set_rasterize_null(void) {
+    /* Must not crash */
+    sc_gfx_set_rasterize(NULL, false);
+    sc_gfx_set_rasterize(NULL, true);
+    PASS("set_rasterize_null");
+    return 0;
+}
+
+static int test_init_zero_size(void) {
+    /* width=0, height=0 should use defaults */
+    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 0, .height = 0};
+    SCGfxContext *ctx = NULL;
+    SCResult r = sc_gfx_init(&desc, &ctx);
+    FAIL_UNLESS(r == SC_OK, "init zero size ok");
+    FAIL_UNLESS(ctx != NULL, "ctx non-null");
+    sc_gfx_shutdown(ctx);
+    PASS("init_zero_size");
+    return 0;
+}
+
+static int test_frame_stats_clean(void) {
+    /* Frame stats should be zeroed after init and before any frame begins */
+    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 64, .height = 64};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+    SCGfxFrameStats s = sc_gfx_frame_stats(ctx);
+    FAIL_UNLESS(s.draw_calls == 0, "stats draw_calls = 0");
+    FAIL_UNLESS(s.vertex_count == 0, "stats vertex_count = 0");
+    FAIL_UNLESS(s.index_count == 0, "stats index_count = 0");
+    sc_gfx_shutdown(ctx);
+    PASS("frame_stats_clean");
+    return 0;
+}
+
+static int test_destroy_invalid_handles(void) {
+    /* Destroying invalid (id=0) handles must not crash */
+    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 32, .height = 32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxBuffer buf  = {0};
+    SCGfxTexture tex = {0};
+    SCGfxShader  shd = {0};
+    SCGfxPipeline pip = {0};
+
+    sc_gfx_destroy_buffer(ctx, buf);
+    sc_gfx_destroy_texture(ctx, tex);
+    sc_gfx_destroy_shader(ctx, shd);
+    sc_gfx_destroy_pipeline(ctx, pip);
+
+    sc_gfx_shutdown(ctx);
+    PASS("destroy_invalid_handles");
+    return 0;
+}
+
+static int test_init_shutdown_no_resources(void) {
+    /* Init and shutdown without allocating any resources */
+    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 64, .height = 64};
+    SCGfxContext *ctx = NULL;
+    FAIL_UNLESS(sc_ok(sc_gfx_init(&desc, &ctx)), "init ok");
+    sc_gfx_shutdown(ctx);
+    PASS("init_shutdown_no_resources");
+    return 0;
+}
+
 int main(void) {
     printf("=== sc_gfx tests ===\n");
     int fail = 0;
     fail += test_init_shutdown();
     fail += test_resources();
     fail += test_frame_loop();
+    fail += test_shutdown_null();
+    fail += test_set_rasterize_null();
+    fail += test_init_zero_size();
+    fail += test_frame_stats_clean();
+    fail += test_destroy_invalid_handles();
+    fail += test_init_shutdown_no_resources();
     if (!fail) printf("All gfx tests passed.\n");
     return fail;
 }

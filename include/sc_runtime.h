@@ -49,6 +49,9 @@
 
 #include <stdatomic.h>   /* MPSC queue */
 
+/* Forward declaration */
+struct SCEventLoop;
+
 /* -------------------------------------------------------------------------
  * Constants
  * ---------------------------------------------------------------------- */
@@ -76,6 +79,7 @@ typedef struct SCFiber {
     SCFiberState state;
     SCFiberFn    fn;
     void        *userdata;
+    struct SCEventLoop *loop;  /* back-pointer for yield/exit context switch */
     u8          *stack;
     usize        stack_size;
     const char  *name;
@@ -133,6 +137,9 @@ typedef struct SCEventLoop {
     u32        fiber_count;
     i32        current_fiber;      /* index of active fiber (-1 = main) */
     SCFiber   *main_fiber;         /* the OS thread's "fiber"           */
+#ifdef SC_FIBER_UCONTEXT
+    ucontext_t scheduler_ctx;      /* saved context for fiber scheduling */
+#endif
 
     /* Tasks (MPSC) */
     SCMpscQueue task_queue;
@@ -261,6 +268,7 @@ static SCTask *_sc_mpsc_pop(SCMpscQueue *q) {
 
 /* ---- Timer min-heap --------------------------------------------------- */
 static void _sc_timer_sift_up(SCTimer *h, u32 n, u32 i) {
+    (void)n;
     while (i > 0) {
         u32 p = (i - 1) / 2;
         if (h[p].fire_at_ns <= h[i].fire_at_ns) break;
@@ -306,7 +314,9 @@ static void _sc_fiber_entry(u32 hi, u32 lo) {
     SCFiber *f    = (SCFiber*)(void*)ptr;
     f->fn(f->userdata);
     f->state = SC_FIBER_DEAD;
-    /* Return to caller context */
+    if (f->loop) {
+        swapcontext(&f->ctx, &f->loop->scheduler_ctx);
+    }
 }
 #endif
 
@@ -320,6 +330,7 @@ i32 sc_fiber_spawn(SCEventLoop *loop, SCFiberFn fn, void *userdata,
     f->state      = SC_FIBER_IDLE;
     f->fn         = fn;
     f->userdata   = userdata;
+    f->loop       = loop;
     f->name       = name ? name : "unnamed";
     f->stack_size = SC_FIBER_STACK_SIZE;
     f->stack      = (u8*)malloc(SC_FIBER_STACK_SIZE);
@@ -335,7 +346,7 @@ i32 sc_fiber_spawn(SCEventLoop *loop, SCFiberFn fn, void *userdata,
     f->ctx.uc_stack.ss_size  = f->stack_size;
     f->ctx.uc_link           = NULL; /* we handle death ourselves */
     uintptr_t ptr = (uintptr_t)(void*)f;
-    makecontext(&f->ctx, (void(*)())_sc_fiber_entry, 2,
+    makecontext(&f->ctx, (void(*)(void))_sc_fiber_entry, 2,
                 (u32)(ptr >> 32), (u32)(ptr & 0xFFFFFFFF));
 #endif
     return id;
@@ -345,12 +356,18 @@ void sc_fiber_yield(SCEventLoop *loop) {
     if (loop->current_fiber < 0) return;
     SCFiber *f = &loop->fibers[loop->current_fiber];
     f->state = SC_FIBER_WAITING;
-    /* We'd swapcontext back to the scheduler here */
+#ifdef SC_FIBER_UCONTEXT
+    swapcontext(&f->ctx, &loop->scheduler_ctx);
+#endif
 }
 
 void sc_fiber_exit(SCEventLoop *loop) {
     if (loop->current_fiber < 0) return;
-    loop->fibers[loop->current_fiber].state = SC_FIBER_DEAD;
+    SCFiber *f = &loop->fibers[loop->current_fiber];
+    f->state = SC_FIBER_DEAD;
+#ifdef SC_FIBER_UCONTEXT
+    swapcontext(&f->ctx, &loop->scheduler_ctx);
+#endif
 }
 
 /* ---- Task post -------------------------------------------------------- */
@@ -435,11 +452,14 @@ void sc_loop_tick(SCEventLoop *loop, u64 now_ns) {
             f->state            = SC_FIBER_RUNNING;
             loop->current_fiber = i;
 #ifdef SC_FIBER_UCONTEXT
-            /* swapcontext would go here once scheduler fiber is set up */
-#endif
-            /* Minimal cooperative: just call the function directly */
+            swapcontext(&loop->scheduler_ctx, &f->ctx);
+            /* Returned from fiber — it either yielded (WAITING) or exited (DEAD).
+             * Fiber manages its own state; we do not override it here. */
+#else
+            /* No swapcontext support: run to completion (no yield). */
             f->fn(f->userdata);
-            f->state = SC_FIBER_DEAD;  /* fn ran to completion */
+            f->state = SC_FIBER_DEAD;
+#endif
             loop->current_fiber = -1;
         }
     }

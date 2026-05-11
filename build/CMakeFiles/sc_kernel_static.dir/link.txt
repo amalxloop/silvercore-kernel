@@ -1,2 +1,0 @@
-/usr/bin/ar qc libsc_kernel.a CMakeFiles/sc_kernel_static.dir/sc_kernel.c.o
-/usr/bin/ranlib libsc_kernel.a

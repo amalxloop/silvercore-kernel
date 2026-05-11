@@ -34,6 +34,9 @@
 #include "sc_layout.h"
 #include "sc_arena.h"
 
+/* Forward declaration for font system */
+typedef struct SCFont SCFont;
+
 /* -------------------------------------------------------------------------
  * Limits
  * ---------------------------------------------------------------------- */
@@ -176,6 +179,10 @@ typedef struct SCScene {
     /* Graphics context (borrowed) */
     SCGfxContext  *gfx;
 
+    /* Default font for text widgets */
+    SCFont        *font;
+    SCGfxTexture   font_atlas_tex;
+
     /* Viewport */
     f32            viewport_w, viewport_h;
 
@@ -208,6 +215,9 @@ void  sc_widget_set_color(SCScene *s, i32 id, SCColor c);
 void  sc_widget_set_alpha(SCScene *s, i32 id, f32 a);
 void  sc_widget_set_visible(SCScene *s, i32 id, bool v);
 
+/* Font */
+void  sc_scene_set_font(SCScene *s, SCFont *font);
+
 /* Animation */
 i32   sc_anim_push(SCScene *s, i32 widget_id,
                    SCAnimProp prop, f32 from, f32 to,
@@ -222,6 +232,7 @@ void  sc_anim_stop(SCScene *s, i32 anim_id);
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include "sc_font.h"
 
 /* ---- Easing functions ------------------------------------------------- */
 static f32 _sc_ease(SCEasing e, f32 t) {
@@ -335,6 +346,17 @@ void sc_widget_set_visible(SCScene *s, i32 id, bool v) {
     s->widgets[id].visible = v;
 }
 
+/* ---- Font ------------------------------------------------------------- */
+void sc_scene_set_font(SCScene *s, SCFont *font) {
+    s->font = font;
+    if (font) {
+        s->font_atlas_tex = sc_font_upload_atlas(font, s->gfx);
+    } else {
+        SCGfxTexture null_tex = {0};
+        s->font_atlas_tex = null_tex;
+    }
+}
+
 /* ---- Animation -------------------------------------------------------- */
 i32 sc_anim_push(SCScene *s, i32 widget_id, SCAnimProp prop,
                   f32 from, f32 to, f32 dur, SCEasing easing, bool loop) {
@@ -415,11 +437,15 @@ void sc_scene_render(SCScene *s) {
                 }
                 break;
             case SC_WIDGET_TEXT:
-                /* Text rendering requires a font rasteriser.
-                 * Fallback: draw a coloured rect proportional to text length. */
-                sc_gfx_draw_rect(s->gfx,
-                    (SCRect2f){w->x, w->y, (f32)strlen(w->text) * w->font_size * 0.6f, w->font_size},
-                    w->text_color);
+                if (s->font && s->font_atlas_tex.id > 0 && strlen(w->text) > 0) {
+                    sc_font_render_text(s->gfx, s->font, w->text,
+                        w->x, w->y, w->text_color, s->font_atlas_tex);
+                } else {
+                    /* Fallback: draw a coloured rect proportional to text length */
+                    sc_gfx_draw_rect(s->gfx,
+                        (SCRect2f){w->x, w->y, (f32)strlen(w->text) * w->font_size * 0.6f, w->font_size},
+                        w->text_color);
+                }
                 break;
             case SC_WIDGET_IMAGE:
                 sc_gfx_draw_sprite(s->gfx, rect, w->texture, col);

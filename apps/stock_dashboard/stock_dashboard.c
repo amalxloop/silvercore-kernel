@@ -35,6 +35,7 @@
 #define SC_LAYOUT_IMPLEMENTATION
 #define SC_WIDGET_IMPLEMENTATION
 #define SC_RUNTIME_IMPLEMENTATION
+#define SC_FONT_IMPLEMENTATION
 #define SC_GFX_BACKEND_SOFTWARE
 
 #include "../../include/sc_types.h"
@@ -340,6 +341,9 @@ int main(void) {
     };
     SCResult res = sc_gfx_init(&gfx_desc, &d->gfx);
     if (!sc_ok(res)) { fprintf(stderr, "sc_gfx_init failed: %d\n", res); return 1; }
+
+    /* Headless benchmark: disable software rasterization (no display) */
+    sc_gfx_set_rasterize(d->gfx, false);
 
     /* --- Scene --------------------------------------------------------- */
     sc_scene_init(&d->scene, d->gfx, (f32)VIEWPORT_W, (f32)VIEWPORT_H);

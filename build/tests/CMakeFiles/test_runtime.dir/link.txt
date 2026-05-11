@@ -1,1 +1,0 @@
-/usr/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_runtime.dir/link.d CMakeFiles/test_runtime.dir/test_runtime.c.o -o test_runtime  -lm

@@ -1,1 +1,0 @@
-/usr/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_gfx.dir/link.d CMakeFiles/test_gfx.dir/test_gfx.c.o -o test_gfx  -lm
