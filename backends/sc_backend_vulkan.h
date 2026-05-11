@@ -1244,6 +1244,38 @@ SCGfxTexture sc_vulkan_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *d
     return h;
 }
 
+SCResult sc_vulkan_resize(SCGfxContext *ctx, u32 width, u32 height) {
+    if (!ctx || !ctx->backend_data || width == 0 || height == 0)
+        return SC_ERR_INVALID_ARG;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+
+    vkDeviceWaitIdle(s->device);
+    s->width  = width;
+    s->height = height;
+    ctx->width  = width;
+    ctx->height = height;
+
+    if (s->headless) {
+        /* Destroy old offscreen resources */
+        if (s->os_fbo)   vkDestroyFramebuffer(s->device, s->os_fbo, NULL);
+        if (s->os_view)  vkDestroyImageView(s->device, s->os_view, NULL);
+        if (s->os_image) vkDestroyImage(s->device, s->os_image, NULL);
+        if (s->os_mem)   vkFreeMemory(s->device, s->os_mem, NULL);
+        s->os_fbo = s->os_view = VK_NULL_HANDLE;
+        s->os_image = VK_NULL_HANDLE;
+        s->os_mem   = VK_NULL_HANDLE;
+
+        VkResult r = _sc_vk_create_offscreen(s->device, s->phy_dev, s->gfx_queue,
+            s->width, s->height, s->swap_fmt, s->render_pass,
+            &s->os_image, &s->os_mem, &s->os_view, &s->os_fbo);
+        return (r == VK_SUCCESS) ? SC_OK : SC_ERR_GFX;
+    }
+
+    /* Windowed: recreate swapchain */
+    VkResult r = _sc_vk_recreate_swapchain(s);
+    return (r == VK_SUCCESS) ? SC_OK : SC_ERR_GFX;
+}
+
 void sc_vulkan_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
     if (!ctx || !ctx->backend_data || tex.id == 0 || tex.id >= SC_GFX_MAX_TEXTURES)
         return;

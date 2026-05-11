@@ -1,0 +1,64 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test-software:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & test (software backend)
+        run: |
+          for t in test_arena test_math test_layout test_gfx test_runtime test_font; do
+            clang -I include -I tools -Wall -Wextra -Wpedantic -Wshadow \
+              tests/${t}.c -lm -o /tmp/$t && /tmp/$t
+          done
+      - name: Build stock_dashboard + PPM output
+        run: |
+          clang -O3 -DSC_GFX_IMPLEMENTATION -DSC_LAYOUT_IMPLEMENTATION \
+            -DSC_WIDGET_IMPLEMENTATION -DSC_RUNTIME_IMPLEMENTATION \
+            -DSC_FONT_IMPLEMENTATION -DSC_GFX_BACKEND_SOFTWARE \
+            -I include -I tools apps/stock_dashboard/stock_dashboard.c \
+            -lm -o /tmp/stock_dashboard
+          /tmp/stock_dashboard
+          file silvercore.ppm
+
+  test-vulkan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers
+      - name: Compile Vulkan backend
+        run: |
+          clang -I include -I tools -DSC_GFX_IMPLEMENTATION \
+            -DSC_GFX_BACKEND_VULKAN -DSC_BACKEND_VULKAN_IMPLEMENTATION \
+            -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
+            -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
+            -c backends/sc_backend_vulkan.h -o /dev/null -x c \
+            -Wall -Wextra -Wpedantic -Wshadow
+      - name: Build and run Vulkan headless test
+        run: |
+          clang -I include -I tools -DSC_GFX_IMPLEMENTATION \
+            -DSC_GFX_BACKEND_VULKAN -DSC_BACKEND_VULKAN_IMPLEMENTATION \
+            -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
+            -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
+            -Wall -Wextra -Wpedantic -Wshadow \
+            tests/test_gfx.c -lm -lvulkan -o /tmp/test_vk
+          /tmp/test_vk
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+      - name: Build WASM target
+        run: |
+          emcmake cmake -S . -B build-wasm -DWASM=ON -DSC_TESTS=OFF
+          cmake --build build-wasm -j$(nproc)
+      - name: Verify WASM output
+        run: |
+          ls -lh build-wasm/*.wasm build-wasm/*.js

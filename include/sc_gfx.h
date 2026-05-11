@@ -256,6 +256,9 @@ SCGfxFrameStats sc_gfx_frame_stats  (const SCGfxContext *ctx);
 /* Enable or disable software framebuffer rasterization (default: on) */
 void           sc_gfx_set_rasterize(SCGfxContext *ctx, bool enable);
 
+/* Resize the framebuffer / swapchain (handle window resize) */
+SCResult       sc_gfx_resize(SCGfxContext *ctx, u32 width, u32 height);
+
 /* Built-in 2-D helpers (sprite / rect / text batch) */
 void sc_gfx_draw_rect  (SCGfxContext *ctx, SCRect2f rect, SCColor color);
 void sc_gfx_draw_sprite(SCGfxContext *ctx, SCRect2f dest, SCGfxTexture tex, SCColor tint);
@@ -303,6 +306,7 @@ void     sc_vulkan_end_frame   (SCGfxContext *ctx);
 SCGfxTexture sc_vulkan_make_texture (SCGfxContext *ctx,
                                      const SCGfxTextureDesc *desc);
 void         sc_vulkan_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
+SCResult sc_vulkan_resize      (SCGfxContext *ctx, u32 width, u32 height);
 #endif
 
 /* ---- Internal context ------------------------------------------------- */
@@ -684,6 +688,24 @@ SCGfxFrameStats sc_gfx_frame_stats(const SCGfxContext *ctx) {
 
 void sc_gfx_set_rasterize(SCGfxContext *ctx, bool enable) {
     if (ctx) ctx->rasterize = enable;
+}
+
+SCResult sc_gfx_resize(SCGfxContext *ctx, u32 width, u32 height) {
+    if (!ctx || width == 0 || height == 0) return SC_ERR_INVALID_ARG;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        return sc_vulkan_resize(ctx, width, height);
+    }
+#endif
+    if (ctx->backend == SC_BACKEND_SOFTWARE) {
+        u8 *fb = (u8*)realloc(ctx->framebuffer, (usize)width * height * 4);
+        if (!fb) return SC_ERR_OOM;
+        ctx->framebuffer = fb;
+        ctx->width  = width;
+        ctx->height = height;
+        return SC_OK;
+    }
+    return SC_ERR_NOT_SUPPORTED;
 }
 
 /* ---- 2-D batch helpers ------------------------------------------------ */

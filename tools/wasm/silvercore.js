@@ -77,6 +77,7 @@ class SilverCoreApp {
             gfx_shutdown:       m.cwrap("sc_gfx_shutdown",       null,     ["number"]),
             gfx_begin_frame:    m.cwrap("sc_gfx_begin_frame",    null,     ["number","number","number","number","number"]),
             gfx_end_frame:      m.cwrap("sc_gfx_end_frame",      null,     ["number"]),
+            gfx_resize:         m.cwrap("sc_gfx_resize",         "number", ["number","number","number"]),
             gfx_draw_rect:      m.cwrap("sc_gfx_draw_rect",      null,     ["number","number","number","number","number","number","number","number","number"]),
             gfx_draw_line:      m.cwrap("sc_gfx_draw_line",      null,     ["number","number","number","number","number","number","number","number","number"]),
             scene_init:         m.cwrap("sc_scene_init",         null,     ["number","number","number","number"]),

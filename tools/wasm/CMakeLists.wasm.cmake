@@ -39,6 +39,7 @@ set(WASM_LINK_FLAGS
         "'_sc_gfx_shutdown',"
         "'_sc_gfx_begin_frame',"
         "'_sc_gfx_end_frame',"
+        "'_sc_gfx_resize',"
         "'_sc_gfx_draw_rect',"
         "'_sc_gfx_draw_line',"
         "'_sc_gfx_draw_sprite',"
@@ -76,7 +77,7 @@ string(JOIN " " WASM_LINK_FLAGS_STR ${WASM_LINK_FLAGS})
 # WASM target
 # ---------------------------------------------------------------------------
 add_executable(silvercore_wasm
-    ${CMAKE_SOURCE_DIR}/src/sc_kernel.c          # implementation TU
+    ${CMAKE_BINARY_DIR}/sc_kernel.c          # auto-generated unity build TU
     ${CMAKE_SOURCE_DIR}/apps/stock_dashboard/stock_dashboard.c
 )
 
@@ -85,19 +86,21 @@ target_compile_definitions(silvercore_wasm PRIVATE
     SC_LAYOUT_IMPLEMENTATION
     SC_WIDGET_IMPLEMENTATION
     SC_RUNTIME_IMPLEMENTATION
+    SC_FONT_IMPLEMENTATION
     SC_GFX_BACKEND_SOFTWARE   # WebGPU path TBD
     SC_PLATFORM_WASM
 )
 
 target_include_directories(silvercore_wasm PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tools
 )
 
 set_target_properties(silvercore_wasm PROPERTIES
     OUTPUT_NAME "silvercore"
     SUFFIX ".js"
-    LINK_FLAGS "${WASM_LINK_FLAGS_STR}"
 )
+target_link_options(silvercore_wasm PRIVATE ${WASM_LINK_FLAGS})
 
 target_compile_options(silvercore_wasm PRIVATE
     -O3
