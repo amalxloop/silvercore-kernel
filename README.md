@@ -21,11 +21,12 @@ SilverCore removes the bridge. App logic, layout, animation, and rendering are a
 | Types & primitives | `include/sc_types.h` | Fixed-width integers, platform detection, compiler macros, result codes, RGBA color, 2-D rects |
 | Math | `include/sc_math.h` | vec2/vec3/vec4/mat4 with SSE2 and NEON hot paths |
 | Memory | `include/sc_arena.h` | Linear bump allocator + typed slab pool — zero `malloc` on the hot path |
-| Layout engine | `include/sc_layout.h` | Flexbox subset in C: row/column, flex-grow, justify-content, align-items, margin, padding |
-| Graphics layer | `include/sc_gfx.h` | Backend-agnostic 2-D/3-D API (Vulkan / Metal / D3D12 / Software) |
+| Layout engine | `include/sc_layout.h` | Flexbox subset in C: row/column, flex-grow, flex-wrap, align-self, gap, justify-content, align-items, margin, padding |
+| Font system | `include/sc_font.h` | stb_truetype-based font rasterizer with glyph atlas caching and text rendering |
+| Graphics layer | `include/sc_gfx.h` | Backend-agnostic 2-D/3-D API (Vulkan / Software), dispatches to active backend |
 | Widget/scene | `include/sc_widget.h` | Retained widget tree with animations, events, and layout sync |
 | Runtime | `include/sc_runtime.h` | Cooperative fiber scheduler, MPSC task queue, min-heap timer, 60 Hz loop |
-| Vulkan backend | `backends/sc_backend_vulkan.h` | Vulkan surface stub — replace bodies with real `vk*` calls |
+| Vulkan backend | `backends/sc_backend_vulkan.h` | Full Vulkan 1.0 implementation: swapchain, offscreen, shaders via embedded SPIR-V, push constants, batch rendering |
 | Metal backend | `backends/sc_backend_metal.h` | Metal surface stub |
 | D3D12 backend | `backends/sc_backend_d3d12.h` | D3D12 surface stub |
 | Python bindings | `bindings/python/silvercore.py` | ctypes wrapper + simulation mode (no native lib required) |
@@ -69,7 +70,7 @@ Cell size  : 34x18 px
 │      ↓                          ↓                           │
 │  SCGfxContext  ──── draw_rect / draw_line / draw_sprite ───▶│
 │      ↓                                                      │
-│  Backend: Vulkan | Metal | D3D12 | Software | WebGPU        │
+│  Backend: Vulkan (full) | Software | Metal | D3D12          │
 └────────────────────────────────────────────────────────────┘
                         │
 ┌───────────────────────▼────────────────────────────────────┐
@@ -127,6 +128,7 @@ cmake --build build-wasm -j$(nproc)
 
 | Option | Default | Description |
 |---|---|---|
+| `SC_GFX_BACKEND` | `SOFTWARE` | Graphics backend: `SOFTWARE` or `VULKAN` |
 | `SC_TESTS` | `ON` | Build test suite |
 | `SC_SHARED` | `ON` | Build shared library for Python ctypes |
 | `SC_ASAN` | `OFF` | Enable AddressSanitizer |
@@ -172,17 +174,23 @@ silvercore-kernel/
 │   ├── sc_types.h        Core types, macros, result codes
 │   ├── sc_math.h         vec2/3/4, mat4, SIMD paths
 │   ├── sc_arena.h        Arena + pool allocators
-│   ├── sc_layout.h       Flexbox layout engine
+│   ├── sc_layout.h       Flexbox layout engine (wrap, gap, align-self)
+│   ├── sc_font.h         stb_truetype font rasterizer + atlas
 │   ├── sc_gfx.h          Graphics abstraction layer
 │   ├── sc_widget.h       Widget tree, scene, animations
 │   └── sc_runtime.h      Fibers, tasks, timers, event loop
 ├── backends/
-│   ├── sc_backend_vulkan.h
-│   ├── sc_backend_metal.h
-│   └── sc_backend_d3d12.h
+│   ├── sc_backend_vulkan.h   Full Vulkan 1.0 backend
+│   ├── sc_backend_metal.h    Metal stub
+│   └── sc_backend_d3d12.h    D3D12 stub
 ├── bindings/
 │   └── python/silvercore.py
 ├── tools/
+│   ├── stb_truetype.h    Single-header font rasterizer
+│   ├── sc_vk_vert.h      Embedded SPIR-V vertex shader
+│   ├── sc_vk_frag.h      Embedded SPIR-V fragment shader
+│   ├── sc_vert.spv       Compiled vertex shader binary
+│   ├── sc_frag.spv       Compiled fragment shader binary
 │   └── wasm/
 │       ├── CMakeLists.wasm.cmake
 │       └── silvercore.js
@@ -192,8 +200,9 @@ silvercore-kernel/
 ├── tests/
 │   ├── test_arena.c
 │   ├── test_math.c
-│   ├── test_layout.c
-│   ├── test_gfx.c
+│   ├── test_layout.c      35 tests (wrap, gap, align-self, edge cases)
+│   ├── test_gfx.c         9 tests (boundary conditions, frame loop)
+│   ├── test_font.c        Font tests (requires TEST_FONT_PATH)
 │   └── test_runtime.c
 └── CMakeLists.txt
 ```
