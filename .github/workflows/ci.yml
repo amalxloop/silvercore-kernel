@@ -40,12 +40,14 @@ jobs:
             -Wall -Wextra -Wpedantic -Wshadow
       - name: Build and run Vulkan headless test
         run: |
-          clang -I include -I tools -DSC_GFX_IMPLEMENTATION \
+          clang -I include -I tools -I backends \
+            -DSC_GFX_IMPLEMENTATION \
             -DSC_GFX_BACKEND_VULKAN -DSC_BACKEND_VULKAN_IMPLEMENTATION \
             -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
             -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
             -Wall -Wextra -Wpedantic -Wshadow \
-            tests/test_gfx.c -lm -lvulkan -o /tmp/test_vk
+            -x c backends/sc_backend_vulkan.h tests/test_gfx.c \
+            -lm -lvulkan -o /tmp/test_vk
           /tmp/test_vk
 
   wasm:

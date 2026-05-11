@@ -96,6 +96,12 @@ target_include_directories(silvercore_wasm PRIVATE
     ${CMAKE_SOURCE_DIR}/tools
 )
 
+# stock_dashboard.c has its own _IMPLEMENTATION defines; suppress them
+# when compiling as part of the unity build to avoid duplicate symbols.
+set_source_files_properties(${CMAKE_SOURCE_DIR}/apps/stock_dashboard/stock_dashboard.c
+    PROPERTIES COMPILE_DEFINITIONS "SC_NO_IMPLEMENTATION"
+)
+
 set_target_properties(silvercore_wasm PROPERTIES
     OUTPUT_NAME "silvercore"
     SUFFIX ".js"
