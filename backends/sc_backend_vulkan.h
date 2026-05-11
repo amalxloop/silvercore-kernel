@@ -408,7 +408,8 @@ static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
 static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
     VkSurfaceKHR surface, u32 width, u32 height, VkFormat fmt, VkRenderPass rp,
     VkSwapchainKHR *out_swap, u32 *out_len,
-    VkImage **out_images, VkImageView **out_views, VkFramebuffer **out_fbos) {
+    VkImage **out_images, VkImageView **out_views, VkFramebuffer **out_fbos,
+    VkFormat *out_fmt) {
 
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phy, surface, &caps);
@@ -423,6 +424,7 @@ static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
         if (fmts[i].format == fmt) { sf = fmts[i]; break; }
     }
     free(fmts);
+    if (out_fmt) *out_fmt = sf.format;
 
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == 0xFFFFFFFFu) {
@@ -468,6 +470,35 @@ static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
     }
 
     return VK_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------
+ * Destroy swapchain (internal helper, does NOT free ptr arrays)
+ * ---------------------------------------------------------------------- */
+static void _sc_vk_destroy_swapchain_resources(VkDevice dev, _SCVkState *s) {
+    for (u32 i = 0; i < s->swap_len; i++) {
+        if (s->swap_fbos[i])  vkDestroyFramebuffer(dev, s->swap_fbos[i], NULL);
+        if (s->swap_views[i]) vkDestroyImageView(dev, s->swap_views[i], NULL);
+    }
+    free(s->swap_images); s->swap_images = NULL;
+    free(s->swap_views);  s->swap_views  = NULL;
+    free(s->swap_fbos);   s->swap_fbos   = NULL;
+    if (s->swapchain) vkDestroySwapchainKHR(dev, s->swapchain, NULL);
+    s->swapchain = VK_NULL_HANDLE;
+    s->swap_len  = 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Recreate swapchain (handle out-of-date / suboptimal)
+ * ---------------------------------------------------------------------- */
+static VkResult _sc_vk_recreate_swapchain(_SCVkState *s) {
+    vkDeviceWaitIdle(s->device);
+    _sc_vk_destroy_swapchain_resources(s->device, s);
+    return _sc_vk_create_swapchain(s->device, s->phy_dev, s->surface,
+        s->width, s->height, s->swap_fmt, s->render_pass,
+        &s->swapchain, &s->swap_len,
+        &s->swap_images, &s->swap_views, &s->swap_fbos,
+        &s->swap_fmt);
 }
 
 /* -------------------------------------------------------------------------
@@ -849,7 +880,8 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
         r = _sc_vk_create_swapchain(s->device, s->phy_dev, s->surface,
             s->width, s->height, fmt, s->render_pass,
             &s->swapchain, &s->swap_len,
-            &s->swap_images, &s->swap_views, &s->swap_fbos);
+            &s->swap_images, &s->swap_views, &s->swap_fbos,
+            &s->swap_fmt);
         if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
     }
 
@@ -974,8 +1006,15 @@ void sc_vulkan_begin_frame(SCGfxContext *ctx, SCColor clear) {
     vkResetFences(s->device, 1, &f->fence);
 
     if (!s->headless) {
-        vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX,
+        VkResult ar = vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX,
             f->acquire_sem, VK_NULL_HANDLE, &s->cur_image);
+        if (ar == VK_ERROR_OUT_OF_DATE_KHR || ar == VK_SUBOPTIMAL_KHR) {
+            VkResult rr = _sc_vk_recreate_swapchain(s);
+            if (rr != VK_SUCCESS) { s->in_frame = false; return; }
+            ar = vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX,
+                f->acquire_sem, VK_NULL_HANDLE, &s->cur_image);
+        }
+        if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) { s->in_frame = false; return; }
     }
 
     VkCommandBufferBeginInfo bi = {0};
@@ -1106,7 +1145,10 @@ void sc_vulkan_end_frame(SCGfxContext *ctx) {
         pi.swapchainCount     = 1;
         pi.pSwapchains        = &s->swapchain;
         pi.pImageIndices      = &s->cur_image;
-        vkQueuePresentKHR(s->gfx_queue, &pi);
+        VkResult pr = vkQueuePresentKHR(s->gfx_queue, &pi);
+        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
+            _sc_vk_recreate_swapchain(s);
+        }
     }
 
     s->frame_idx = (s->frame_idx + 1) % SC_VK_FRAME_OVERLAP;

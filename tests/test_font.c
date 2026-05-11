@@ -1,8 +1,8 @@
 /*
- * test_font.c  --  Unit tests for sc_font.h (requires a .ttf font)
+ * test_font.c  --  Unit tests for sc_font.h
  *
- * If no font file is provided via TEST_FONT_PATH env variable, tests
- * that load a font are skipped.  Rasterisation tests always run.
+ * Uses an embedded NotoSans test font (tools/sc_test_font.h) by default.
+ * Override with TEST_FONT_PATH env variable.
  */
 #define SC_GFX_IMPLEMENTATION
 #define SC_LAYOUT_IMPLEMENTATION
@@ -14,6 +14,7 @@
 #include "sc_font.h"
 #include "sc_gfx.h"
 #include "sc_widget.h"
+#include "../tools/sc_test_font.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,24 +23,36 @@
     do { if(!(cond)){ printf("  [FAIL] %s\n", why); return 1; } } while(0)
 #define PASS(name) printf("  [PASS] %s\n", name)
 
-static int test_font_create_destroy(void) {
+static unsigned char *load_font_data(usize *out_size) {
     const char *path = getenv("TEST_FONT_PATH");
-    if (!path) { printf("  [SKIP] font_create_destroy (no TEST_FONT_PATH)\n"); return 0; }
+    if (path) {
+        FILE *f = fopen(path, "rb");
+        if (!f) { printf("  [SKIP] cannot open %s\n", path); return NULL; }
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        unsigned char *data = (unsigned char*)malloc((usize)sz);
+        fread(data, 1, (usize)sz, f);
+        fclose(f);
+        *out_size = (usize)sz;
+        return data;
+    }
+    /* Use embedded font */
+    *out_size = _sc_test_ttf_len;
+    unsigned char *data = (unsigned char*)malloc(*out_size);
+    memcpy(data, _sc_test_ttf, *out_size);
+    return data;
+}
 
-    FILE *f = fopen(path, "rb");
-    if (!f) { printf("  [SKIP] font_create_destroy (cannot open %s)\n", path); return 0; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    unsigned char *data = (unsigned char*)malloc((usize)sz);
-    fread(data, 1, (usize)sz, f);
-    fclose(f);
+static int test_font_create_destroy(void) {
+    usize sz;
+    unsigned char *data = load_font_data(&sz);
+    if (!data) { printf("  [SKIP] font_create_destroy (no font data)\n"); return 0; }
 
-    SCFont *font = sc_font_create(data, (usize)sz, 16.0f);
+    SCFont *font = sc_font_create(data, sz, 16.0f);
     FAIL_UNLESS(font != NULL, "sc_font_create succeeds");
     FAIL_UNLESS(font->scale > 0, "font scale > 0");
 
-    /* Measure "Hello" width */
     f32 w = sc_font_text_width(font, "Hello");
     FAIL_UNLESS(w > 0, "text_width > 0");
 
@@ -50,22 +63,13 @@ static int test_font_create_destroy(void) {
 }
 
 static int test_font_atlas_upload(void) {
-    const char *path = getenv("TEST_FONT_PATH");
-    if (!path) { printf("  [SKIP] font_atlas_upload (no TEST_FONT_PATH)\n"); return 0; }
+    usize sz;
+    unsigned char *data = load_font_data(&sz);
+    if (!data) { printf("  [SKIP] font_atlas_upload (no font data)\n"); return 0; }
 
-    FILE *f = fopen(path, "rb");
-    if (!f) { printf("  [SKIP] font_atlas_upload (cannot open)\n"); return 0; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    unsigned char *data = (unsigned char*)malloc((usize)sz);
-    fread(data, 1, (usize)sz, f);
-    fclose(f);
-
-    SCFont *font = sc_font_create(data, (usize)sz, 16.0f);
+    SCFont *font = sc_font_create(data, sz, 16.0f);
     FAIL_UNLESS(font != NULL, "font created");
 
-    /* Create a tiny gfx context for texture upload */
     u8 arena_buf[SC_KB(64)];
     SCArena arena;
     sc_arena_init(&arena, arena_buf, sizeof(arena_buf));
@@ -87,12 +91,10 @@ static int test_font_atlas_upload(void) {
 
     sc_gfx_set_rasterize(gfx, true);
 
-    /* Render a glyph by calling the text renderer */
     sc_gfx_begin_frame(gfx, SC_BLACK);
     sc_font_render_text(gfx, font, "A", 2.0f, 10.0f, SC_WHITE, tex);
     sc_gfx_end_frame(gfx);
 
-    /* Verify framebuffer was written (at least some pixel lit) */
     bool had_pixels = false;
     usize total = (usize)gfx->width * (usize)gfx->height;
     for (usize i = 0; i < total; i++) {

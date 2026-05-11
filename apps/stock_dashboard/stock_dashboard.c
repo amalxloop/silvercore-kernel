@@ -409,6 +409,29 @@ int main(void) {
         (double)d->frame_arena.offset / 1024.0,
         (double)d->frame_arena.size   / 1024.0);
 
+    /* --- Render one frame with rasterization and dump PPM -------------- */
+    {
+        sc_arena_reset(&d->frame_arena);
+        sc_gfx_set_rasterize(d->gfx, true);
+        sc_gfx_begin_frame(d->gfx, sc_rgba(0.05f, 0.05f, 0.08f, 1.0f));
+        update_dashboard(d, 1.0f / TARGET_HZ);
+        sc_scene_render(&d->scene);
+        sc_gfx_end_frame(d->gfx);
+
+        FILE *ppm = fopen("silvercore.ppm", "wb");
+        if (ppm) {
+            fprintf(ppm, "P6\n%u %u\n255\n", d->gfx->width, d->gfx->height);
+            for (u32 y = 0; y < d->gfx->height; y++) {
+                for (u32 x = 0; x < d->gfx->width; x++) {
+                    usize off = ((usize)y * d->gfx->width + (usize)x) * 4;
+                    fwrite(&d->gfx->framebuffer[off], 1, 3, ppm);
+                }
+            }
+            fclose(ppm);
+            fprintf(stdout, "  PPM output   : silvercore.ppm\n");
+        }
+    }
+
     /* --- Shutdown ------------------------------------------------------ */
     sc_loop_shutdown(&d->loop);
     sc_gfx_shutdown(d->gfx);
