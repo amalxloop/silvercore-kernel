@@ -81,12 +81,11 @@ add_executable(silvercore_wasm
     ${CMAKE_SOURCE_DIR}/apps/stock_dashboard/stock_dashboard.c
 )
 
+# Note: _IMPLEMENTATION macros are NOT defined here because both source
+# files already define them (sc_kernel.c unconditionally, stock_dashboard.c
+# when SC_NO_IMPLEMENTATION is absent).  Defining them at target level would
+# force duplicate symbol definitions at link time.
 target_compile_definitions(silvercore_wasm PRIVATE
-    SC_GFX_IMPLEMENTATION
-    SC_LAYOUT_IMPLEMENTATION
-    SC_WIDGET_IMPLEMENTATION
-    SC_RUNTIME_IMPLEMENTATION
-    SC_FONT_IMPLEMENTATION
     SC_GFX_BACKEND_SOFTWARE   # WebGPU path TBD
     SC_PLATFORM_WASM
 )

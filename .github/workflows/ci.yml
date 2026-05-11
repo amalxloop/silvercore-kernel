@@ -59,7 +59,7 @@ jobs:
           version: 3.1.64
       - name: Build WASM target
         run: |
-          emcmake cmake -S . -B build-wasm -DWASM=ON -DSC_TESTS=OFF
+          emcmake cmake -S . -B build-wasm -DWASM=ON -DSC_TESTS=OFF -DSC_SHARED=OFF
           cmake --build build-wasm -j$(nproc)
       - name: Verify WASM output
         run: |
