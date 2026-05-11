@@ -5,6 +5,9 @@
  * Each SCFont represents one font face at a specific pixel size.
  * Glyphs are lazily rendered and cached in a packed atlas texture.
  *
+ * NOTE: Only ASCII (U+0000–U+007F) is supported for text rendering.
+ *       Multi-byte UTF-8 sequences are not decoded.
+ *
  * #define SC_FONT_IMPLEMENTATION
  * #include "sc_font.h"
  */
@@ -95,6 +98,12 @@ static SCFontGlyph *_sc_font_cache_glyph(SCFont *font, u32 codepoint) {
         g->codepoint = codepoint;
         g->w = g->h = 0;
         return g;
+    }
+
+    /* Reject glyph wider than the atlas (would overflow row) */
+    if ((u32)gw > SC_FONT_ATLAS_W) {
+        stbtt_FreeBitmap(bitmap, NULL);
+        return NULL;
     }
 
     /* Pack into atlas (simple row-based packer) */

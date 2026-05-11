@@ -692,6 +692,7 @@ void sc_gfx_set_rasterize(SCGfxContext *ctx, bool enable) {
 
 SCResult sc_gfx_resize(SCGfxContext *ctx, u32 width, u32 height) {
     if (!ctx || width == 0 || height == 0) return SC_ERR_INVALID_ARG;
+    if (height > (SIZE_MAX / 4) / width) return SC_ERR_INVALID_ARG;
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         return sc_vulkan_resize(ctx, width, height);

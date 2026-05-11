@@ -381,7 +381,7 @@ static void _sc_layout_distribute(SCLayoutTree *t, i32 idx,
                 case SC_JUSTIFY_SPACE_BETWEEN: cursor = pad_start_main;
                     igap = (nc_in > 1) ? line_free / (f32)(nc_in - 1) : 0;
                     igap += s->gap; break;
-                case SC_JUSTIFY_SPACE_AROUND:  igap = line_free / (f32)nc_in;
+                case SC_JUSTIFY_SPACE_AROUND:  igap = (nc_in > 0) ? line_free / (f32)nc_in : 0;
                     cursor = pad_start_main + igap * 0.5f; igap += s->gap; break;
             }
 
@@ -454,7 +454,7 @@ static void _sc_layout_distribute(SCLayoutTree *t, i32 idx,
             case SC_JUSTIFY_SPACE_BETWEEN: cursor = pad_start_main;
                 igap = (nc > 1) ? free_space / (f32)(nc-1) : 0;
                 igap += s->gap; break;
-            case SC_JUSTIFY_SPACE_AROUND:  igap = free_space / (f32)nc;
+            case SC_JUSTIFY_SPACE_AROUND:  igap = (nc > 0) ? free_space / (f32)nc : 0;
                 cursor = pad_start_main + igap*0.5f; igap += s->gap; break;
         }
 

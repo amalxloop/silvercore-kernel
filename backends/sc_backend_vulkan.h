@@ -417,6 +417,7 @@ static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
     u32 fmt_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(phy, surface, &fmt_count, NULL);
     VkSurfaceFormatKHR *fmts = (VkSurfaceFormatKHR*)malloc(fmt_count * sizeof(VkSurfaceFormatKHR));
+    if (!fmts) return VK_ERROR_OUT_OF_HOST_MEMORY;
     vkGetPhysicalDeviceSurfaceFormatsKHR(phy, surface, &fmt_count, fmts);
 
     VkSurfaceFormatKHR sf = fmts[0];
@@ -454,6 +455,13 @@ static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
     *out_images = (VkImage*)malloc(*out_len * sizeof(VkImage));
     *out_views  = (VkImageView*)malloc(*out_len * sizeof(VkImageView));
     *out_fbos   = (VkFramebuffer*)malloc(*out_len * sizeof(VkFramebuffer));
+    if (!*out_images || !*out_views || !*out_fbos) {
+        free(*out_images); free(*out_views); free(*out_fbos);
+        *out_images = NULL; *out_views = NULL; *out_fbos = NULL;
+        vkDestroySwapchainKHR(dev, *out_swap, NULL);
+        *out_swap = VK_NULL_HANDLE; *out_len = 0;
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
     vkGetSwapchainImagesKHR(dev, *out_swap, out_len, *out_images);
 
     for (u32 i = 0; i < *out_len; i++) {
@@ -731,6 +739,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     vkEnumeratePhysicalDevices(s->instance, &phy_count, NULL);
     if (phy_count == 0) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
     VkPhysicalDevice *phys = (VkPhysicalDevice*)malloc(phy_count * sizeof(VkPhysicalDevice));
+    if (!phys) { sc_vulkan_shutdown(ctx); return SC_ERR_OOM; }
     vkEnumeratePhysicalDevices(s->instance, &phy_count, phys);
     s->phy_dev = phys[0];
     for (u32 i = 0; i < phy_count; i++) {
@@ -747,6 +756,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     vkGetPhysicalDeviceQueueFamilyProperties(s->phy_dev, &qf_count, NULL);
     VkQueueFamilyProperties *qf = (VkQueueFamilyProperties*)malloc(
         qf_count * sizeof(VkQueueFamilyProperties));
+    if (!qf) { sc_vulkan_shutdown(ctx); return SC_ERR_OOM; }
     vkGetPhysicalDeviceQueueFamilyProperties(s->phy_dev, &qf_count, qf);
 
     u32 gfx_idx = UINT32_MAX;
