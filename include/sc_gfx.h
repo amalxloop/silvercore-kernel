@@ -300,6 +300,9 @@ void     sc_vulkan_begin_frame (SCGfxContext *ctx, SCColor clear);
 void     sc_vulkan_submit      (SCGfxContext *ctx,
                                  const SCGfxDrawCmd *cmds, u32 count);
 void     sc_vulkan_end_frame   (SCGfxContext *ctx);
+SCGfxTexture sc_vulkan_make_texture (SCGfxContext *ctx,
+                                     const SCGfxTextureDesc *desc);
+void         sc_vulkan_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
 #endif
 
 /* ---- Internal context ------------------------------------------------- */
@@ -424,6 +427,11 @@ void sc_gfx_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
 }
 
 SCGfxTexture sc_gfx_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *desc) {
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        return sc_vulkan_make_texture(ctx, desc);
+    }
+#endif
     u32 id = _sc_gfx_alloc_slot(ctx->tex_slots, SC_GFX_MAX_TEXTURES);
     SCGfxTexture h = {id};
     if (id == 0) return h;
@@ -471,6 +479,13 @@ void sc_gfx_update_texture(SCGfxContext *ctx, SCGfxTexture tex,
 }
 void sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
     if (tex.id == 0) return;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        sc_vulkan_destroy_texture(ctx, tex);
+        _sc_gfx_free_slot(ctx->tex_slots, tex.id);
+        return;
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
         free(ctx->tex_data[tex.id].pixels);
         ctx->tex_data[tex.id].pixels = NULL;

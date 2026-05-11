@@ -109,6 +109,14 @@ typedef struct {
     u32               frame_idx;
     u32               cur_image;
     bool              in_frame;
+
+    /* Texture support */
+    VkImage           tex_images[SC_GFX_MAX_TEXTURES];
+    VkDeviceMemory    tex_mems[SC_GFX_MAX_TEXTURES];
+    VkImageView       tex_views[SC_GFX_MAX_TEXTURES];
+    VkSampler         sampler;
+    VkDescriptorPool  desc_pool;
+    VkDescriptorSet   desc_set;
 } _SCVkState;
 
 /* -------------------------------------------------------------------------
@@ -187,7 +195,7 @@ static VkResult _sc_vk_make_view(VkDevice dev, VkImage img, VkFormat fmt,
 static VkResult _sc_vk_create_pipeline(VkDevice dev,
     VkShaderModule vs, VkShaderModule fs,
     VkPipelineLayout layout, VkRenderPass rp,
-    u32 width, u32 height, VkPipeline *out) {
+    VkPipeline *out) {
 
     VkPipelineShaderStageCreateInfo stages[2] = {{0},{0}};
     stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -226,12 +234,18 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
     ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    VkViewport vp = {0.0f, 0.0f, (f32)width, (f32)height, 0.0f, 1.0f};
-    VkRect2D   sc = {{0,0},{width,height}};
+    VkDynamicState dynamic_states[2] = {
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamic_state = {0};
+    dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.dynamicStateCount = 2;
+    dynamic_state.pDynamicStates    = dynamic_states;
+
     VkPipelineViewportStateCreateInfo vsi = {0};
     vsi.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vsi.viewportCount = 1; vsi.pViewports = &vp;
-    vsi.scissorCount  = 1; vsi.pScissors  = &sc;
+    vsi.viewportCount = 1; vsi.pViewports = NULL;
+    vsi.scissorCount  = 1; vsi.pScissors  = NULL;
 
     VkPipelineRasterizationStateCreateInfo rs = {0};
     rs.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -267,8 +281,9 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
     ci.pRasterizationState = &rs;
     ci.pMultisampleState   = &ms;
     ci.pColorBlendState    = &cbs;
-    ci.layout     = layout;
-    ci.renderPass = rp;
+    ci.layout      = layout;
+    ci.renderPass  = rp;
+    ci.pDynamicState = &dynamic_state;
 
     return vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, out);
 }
@@ -452,6 +467,168 @@ static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
         vkCreateFramebuffer(dev, &fci, NULL, &(*out_fbos)[i]);
     }
 
+    return VK_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------
+ * Sampler helper
+ * ---------------------------------------------------------------------- */
+static VkResult _sc_vk_create_sampler(VkDevice dev, VkSampler *out) {
+    VkSamplerCreateInfo ci = {0};
+    ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    ci.magFilter    = VK_FILTER_LINEAR;
+    ci.minFilter    = VK_FILTER_LINEAR;
+    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.maxLod       = 1.0f;
+    return vkCreateSampler(dev, &ci, NULL, out);
+}
+
+/* -------------------------------------------------------------------------
+ * Descriptor pool helper
+ * ---------------------------------------------------------------------- */
+static VkResult _sc_vk_create_desc_pool(VkDevice dev, VkDescriptorPool *out) {
+    VkDescriptorPoolSize ps = {0};
+    ps.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ps.descriptorCount = SC_GFX_MAX_TEXTURES;
+    VkDescriptorPoolCreateInfo ci = {0};
+    ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    ci.maxSets       = 1;
+    ci.poolSizeCount = 1;
+    ci.pPoolSizes    = &ps;
+    return vkCreateDescriptorPool(dev, &ci, NULL, out);
+}
+
+/* -------------------------------------------------------------------------
+ * Descriptor set helper (single set, updated per draw call)
+ * ---------------------------------------------------------------------- */
+static VkResult _sc_vk_alloc_desc_set(VkDevice dev,
+    VkDescriptorPool pool, VkDescriptorSetLayout layout, VkDescriptorSet *out) {
+    VkDescriptorSetAllocateInfo ai = {0};
+    ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool     = pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts        = &layout;
+    return vkAllocateDescriptorSets(dev, &ai, out);
+}
+
+/* -------------------------------------------------------------------------
+ * Upload pixel data to a VkImage (staging buffer + layout transition)
+ * ---------------------------------------------------------------------- */
+static VkResult _sc_vk_upload_tex_data(VkDevice dev, VkPhysicalDevice phy,
+    VkQueue queue, VkCommandPool pool, VkImage image,
+    u32 w, u32 h, VkDeviceSize data_size, const void *data) {
+    if (!data || data_size == 0) {
+        /* No data: just transition to shader-read-only */
+        VkCommandBufferAllocateInfo cai = {0};
+        cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cai.commandPool = pool;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandBufferCount = 1;
+        VkCommandBuffer cb;
+        vkAllocateCommandBuffers(dev, &cai, &cb);
+        VkCommandBufferBeginInfo bi = {0};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cb, &bi);
+        VkImageMemoryBarrier barrier = {0};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+            0, NULL, 0, NULL, 1, &barrier);
+        vkEndCommandBuffer(cb);
+        VkSubmitInfo si = {0};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1; si.pCommandBuffers = &cb;
+        vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+        vkDeviceWaitIdle(dev);
+        vkFreeCommandBuffers(dev, pool, 1, &cb);
+        return VK_SUCCESS;
+    }
+
+    /* Create staging buffer */
+    VkBuffer       staging_buf;
+    VkDeviceMemory staging_mem;
+    VkResult r = _sc_vk_create_buf(dev, phy, data_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &staging_buf, &staging_mem);
+    if (r != VK_SUCCESS) return r;
+
+    void *map;
+    vkMapMemory(dev, staging_mem, 0, data_size, 0, &map);
+    memcpy(map, data, (usize)data_size);
+    vkUnmapMemory(dev, staging_mem);
+
+    /* One-time command buffer: copy staging → image + transition */
+    VkCommandBufferAllocateInfo cai = {0};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    vkAllocateCommandBuffers(dev, &cai, &cb);
+
+    VkCommandBufferBeginInfo bi = {0};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+
+    VkImageMemoryBarrier barrier_to_dst = {0};
+    barrier_to_dst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier_to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier_to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier_to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier_to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier_to_dst.image = image;
+    barrier_to_dst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier_to_dst.subresourceRange.levelCount = 1;
+    barrier_to_dst.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+        0, NULL, 0, NULL, 1, &barrier_to_dst);
+
+    VkBufferImageCopy copy_region = {0};
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageExtent = (VkExtent3D){w, h, 1};
+    vkCmdCopyBufferToImage(cb, staging_buf, image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+    VkImageMemoryBarrier barrier_to_read = {0};
+    barrier_to_read.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier_to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier_to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier_to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier_to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier_to_read.image = image;
+    barrier_to_read.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier_to_read.subresourceRange.levelCount = 1;
+    barrier_to_read.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+        0, NULL, 0, NULL, 1, &barrier_to_read);
+
+    vkEndCommandBuffer(cb);
+
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1; si.pCommandBuffers = &cb;
+    vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+    vkDeviceWaitIdle(dev);
+
+    vkFreeCommandBuffers(dev, pool, 1, &cb);
+    vkDestroyBuffer(dev, staging_buf, NULL);
+    vkFreeMemory(dev, staging_mem, NULL);
     return VK_SUCCESS;
 }
 
@@ -643,7 +820,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
 
     /* ---- Graphics pipeline -------------------------------------------- */
     r = _sc_vk_create_pipeline(s->device, vs, fs, s->pipeline_layout,
-                                s->render_pass, s->width, s->height, &s->pipeline);
+                                s->render_pass, &s->pipeline);
     vkDestroyShaderModule(s->device, fs, NULL);
     vkDestroyShaderModule(s->device, vs, NULL);
     if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
@@ -667,6 +844,20 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     r = vkCreateCommandPool(s->device, &cpci, NULL, &s->cmd_pool);
+    if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
+
+    /* ---- Texture sampler & descriptor pool ---------------------------- */
+    memset(s->tex_images, 0, sizeof(s->tex_images));
+    memset(s->tex_mems,   0, sizeof(s->tex_mems));
+    memset(s->tex_views,  0, sizeof(s->tex_views));
+
+    r = _sc_vk_create_sampler(s->device, &s->sampler);
+    if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
+
+    r = _sc_vk_create_desc_pool(s->device, &s->desc_pool);
+    if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
+
+    r = _sc_vk_alloc_desc_set(s->device, s->desc_pool, s->ds_layout, &s->desc_set);
     if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
 
     /* ---- Per-frame resources ------------------------------------------ */
@@ -719,6 +910,15 @@ void sc_vulkan_shutdown(SCGfxContext *ctx) {
         if (f->acquire_sem)   vkDestroySemaphore(s->device, f->acquire_sem, NULL);
         if (f->submit_sem)    vkDestroySemaphore(s->device, f->submit_sem, NULL);
     }
+
+    /* Destroy textures */
+    for (u32 i = 0; i < SC_GFX_MAX_TEXTURES; i++) {
+        if (s->tex_views[i]) vkDestroyImageView(s->device, s->tex_views[i], NULL);
+        if (s->tex_images[i]) vkDestroyImage(s->device, s->tex_images[i], NULL);
+        if (s->tex_mems[i])   vkFreeMemory(s->device, s->tex_mems[i], NULL);
+    }
+    if (s->desc_pool) vkDestroyDescriptorPool(s->device, s->desc_pool, NULL);
+    if (s->sampler)   vkDestroySampler(s->device, s->sampler, NULL);
 
     if (s->cmd_pool) vkDestroyCommandPool(s->device, s->cmd_pool, NULL);
 
@@ -790,6 +990,12 @@ void sc_vulkan_begin_frame(SCGfxContext *ctx, SCColor clear) {
     vkCmdBeginRenderPass(f->cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(f->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipeline);
+
+    VkViewport vp = {0.0f, 0.0f, (f32)s->width, (f32)s->height, 0.0f, 1.0f};
+    vkCmdSetViewport(f->cmd, 0, 1, &vp);
+    VkRect2D sci = {{0, 0}, {s->width, s->height}};
+    vkCmdSetScissor(f->cmd, 0, 1, &sci);
+
     s->in_frame = true;
 }
 
@@ -832,7 +1038,27 @@ void sc_vulkan_end_frame(SCGfxContext *ctx) {
         vkCmdBindVertexBuffers(cb, 0, 1, &f->vert_buf, &offset);
 
         for (u32 i = 0; i < ctx->batch_ccount; i++) {
-            u32 ht = ctx->batch_cmds[i].texture.id != 0 ? 1u : 0u;
+            u32 tex_id = ctx->batch_cmds[i].texture.id;
+            u32 ht = tex_id != 0 ? 1u : 0u;
+
+            /* Update descriptor set if textured */
+            if (tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES && s->tex_views[tex_id]) {
+                VkDescriptorImageInfo img_info = {0};
+                img_info.sampler     = s->sampler;
+                img_info.imageView   = s->tex_views[tex_id];
+                img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                VkWriteDescriptorSet write = {0};
+                write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet          = s->desc_set;
+                write.dstBinding      = 0;
+                write.descriptorCount = 1;
+                write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo      = &img_info;
+                vkUpdateDescriptorSets(s->device, 1, &write, 0, NULL);
+                vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    s->pipeline_layout, 0, 1, &s->desc_set, 0, NULL);
+            }
+
             vkCmdPushConstants(cb, s->pipeline_layout,
                 VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4, &ht);
             vkCmdDraw(cb, ctx->batch_cmds[i].vertex_count, 1,
@@ -871,6 +1097,109 @@ void sc_vulkan_end_frame(SCGfxContext *ctx) {
 
     s->frame_idx = (s->frame_idx + 1) % SC_VK_FRAME_OVERLAP;
     s->in_frame  = false;
+}
+
+SCGfxTexture sc_vulkan_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *desc) {
+    SCGfxTexture h = {0};
+    if (!ctx || !ctx->backend_data || !desc || desc->width == 0 || desc->height == 0)
+        return h;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+
+    u32 id = 0;
+    for (u32 i = 1; i < SC_GFX_MAX_TEXTURES; i++) {
+        if (!s->tex_images[i]) { id = i; break; }
+    }
+    if (id == 0) return h;
+    h.id = id;
+
+    VkFormat vk_fmt = VK_FORMAT_R8G8B8A8_UNORM;
+
+    /* Create image */
+    VkImageCreateInfo ici = {0};
+    ici.sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format    = vk_fmt;
+    ici.extent    = (VkExtent3D){desc->width, desc->height, 1};
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples   = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling    = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage     = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkResult r = vkCreateImage(s->device, &ici, NULL, &s->tex_images[id]);
+    if (r != VK_SUCCESS) { h.id = 0; return h; }
+
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(s->device, s->tex_images[id], &mr);
+    VkMemoryAllocateInfo ai = {0};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = _sc_vk_find_mem_type(s->phy_dev, mr.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    r = vkAllocateMemory(s->device, &ai, NULL, &s->tex_mems[id]);
+    if (r != VK_SUCCESS) {
+        vkDestroyImage(s->device, s->tex_images[id], NULL);
+        s->tex_images[id] = VK_NULL_HANDLE;
+        h.id = 0; return h;
+    }
+    vkBindImageMemory(s->device, s->tex_images[id], s->tex_mems[id], 0);
+
+    /* Image view */
+    r = _sc_vk_make_view(s->device, s->tex_images[id], vk_fmt, &s->tex_views[id]);
+    if (r != VK_SUCCESS) {
+        vkDestroyImage(s->device, s->tex_images[id], NULL);
+        vkFreeMemory(s->device, s->tex_mems[id], NULL);
+        s->tex_images[id] = VK_NULL_HANDLE;
+        s->tex_mems[id]   = VK_NULL_HANDLE;
+        h.id = 0; return h;
+    }
+
+    /* Upload pixel data */
+    VkDeviceSize data_size = (VkDeviceSize)desc->width * (VkDeviceSize)desc->height * 4;
+    void *rgba_data = NULL;
+    const void *src_data = desc->data;
+
+    /* Convert R8 → RGBA8 if needed */
+    if (desc->fmt == SC_PIXFMT_R8 && desc->data) {
+        rgba_data = malloc((usize)data_size);
+        if (rgba_data) {
+            const u8 *src8 = (const u8*)desc->data;
+            u8 *dst4 = (u8*)rgba_data;
+            for (u32 y = 0; y < desc->height; y++) {
+                for (u32 x = 0; x < desc->width; x++) {
+                    u8 a = src8[y * desc->width + x];
+                    dst4[(y * desc->width + x) * 4 + 0] = 255;
+                    dst4[(y * desc->width + x) * 4 + 1] = 255;
+                    dst4[(y * desc->width + x) * 4 + 2] = 255;
+                    dst4[(y * desc->width + x) * 4 + 3] = a;
+                }
+            }
+        }
+        src_data = rgba_data;
+    } else if (desc->fmt != SC_PIXFMT_RGBA8 && desc->data) {
+        /* For non-RGBA8/R8 formats, just use raw data as-is */
+        data_size = desc->data_size;
+    }
+
+    _sc_vk_upload_tex_data(s->device, s->phy_dev, s->gfx_queue,
+        s->cmd_pool, s->tex_images[id],
+        desc->width, desc->height, data_size, src_data);
+
+    free(rgba_data);
+    return h;
+}
+
+void sc_vulkan_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
+    if (!ctx || !ctx->backend_data || tex.id == 0 || tex.id >= SC_GFX_MAX_TEXTURES)
+        return;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+    if (!s->tex_images[tex.id]) return;
+    if (s->device) vkDeviceWaitIdle(s->device);
+    if (s->tex_views[tex.id])  vkDestroyImageView(s->device, s->tex_views[tex.id], NULL);
+    if (s->tex_images[tex.id]) vkDestroyImage(s->device, s->tex_images[tex.id], NULL);
+    if (s->tex_mems[tex.id])   vkFreeMemory(s->device, s->tex_mems[tex.id], NULL);
+    s->tex_views[tex.id]  = VK_NULL_HANDLE;
+    s->tex_images[tex.id] = VK_NULL_HANDLE;
+    s->tex_mems[tex.id]   = VK_NULL_HANDLE;
 }
 
 #endif /* SC_BACKEND_VULKAN_IMPLEMENTATION */
