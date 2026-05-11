@@ -264,17 +264,7 @@ void sc_gfx_draw_rect  (SCGfxContext *ctx, SCRect2f rect, SCColor color);
 void sc_gfx_draw_sprite(SCGfxContext *ctx, SCRect2f dest, SCGfxTexture tex, SCColor tint);
 void sc_gfx_draw_line  (SCGfxContext *ctx, SCVec2 a, SCVec2 b, f32 width, SCColor color);
 
-/* -------------------------------------------------------------------------
- * Implementation (software rasteriser only – other backends link separately)
- * ---------------------------------------------------------------------- */
-#ifdef SC_GFX_IMPLEMENTATION
-
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
-
-/* ---- slot pool macros ------------------------------------------------- */
+/* ---- Slot / texture / batch types (used by both impl and declaration) --- */
 #define _SC_SLOT_GENERATIONS 1
 
 typedef struct { u32 gen; bool live; } _SCSlot;
@@ -308,6 +298,16 @@ SCGfxTexture sc_vulkan_make_texture (SCGfxContext *ctx,
 void         sc_vulkan_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
 SCResult sc_vulkan_resize      (SCGfxContext *ctx, u32 width, u32 height);
 #endif
+
+/* -------------------------------------------------------------------------
+ * Implementation (software rasteriser only – other backends link separately)
+ * ---------------------------------------------------------------------- */
+#ifdef SC_GFX_IMPLEMENTATION
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
 
 /* ---- Internal context ------------------------------------------------- */
 #define _SC_MAX_2D_VERTS  65536
