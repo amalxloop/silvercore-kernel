@@ -36,7 +36,7 @@ jobs:
             -DSC_GFX_BACKEND_VULKAN -DSC_BACKEND_VULKAN_IMPLEMENTATION \
             -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
             -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
-            -c backends/sc_backend_vulkan.h -o /dev/null -x c \
+            -x c -c backends/sc_backend_vulkan.h -o /dev/null \
             -Wall -Wextra -Wpedantic -Wshadow
       - name: Build and run Vulkan headless test
         run: |

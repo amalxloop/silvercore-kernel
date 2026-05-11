@@ -143,6 +143,7 @@ typedef enum SCResult {
     SC_ERR_NOT_FOUND        = -4,
     SC_ERR_NOT_SUPPORTED    = -5,
     SC_ERR_BACKEND          = -6,   /* graphics backend error  */
+    SC_ERR_GFX              = SC_ERR_BACKEND, /* alias for SC_ERR_BACKEND */
     SC_ERR_IO               = -7,
     SC_ERR_OVERFLOW         = -8,
     SC_ERR_TIMEOUT          = -9,

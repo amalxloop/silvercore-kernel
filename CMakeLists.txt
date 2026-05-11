@@ -63,12 +63,14 @@ add_compile_options(
     -Wall -Wextra -Wpedantic
     -Wno-unused-parameter
     $<$<CONFIG:Release>:-O3>
-    $<$<CONFIG:Release>:-march=native>
     $<$<CONFIG:Release>:-ffast-math>
     $<$<CONFIG:Debug>:-O0>
     $<$<CONFIG:Debug>:-g3>
     $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
 )
+if(NOT WASM)
+    add_compile_options($<$<CONFIG:Release>:-march=native>)
+endif()
 
 if(SC_ASAN)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
@@ -139,6 +141,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Stock Dashboard PoC executable
 # ---------------------------------------------------------------------------
+if(NOT WASM)
 add_executable(stock_dashboard
     ${CMAKE_SOURCE_DIR}/apps/stock_dashboard/stock_dashboard.c
 )
@@ -148,6 +151,7 @@ target_link_libraries(stock_dashboard PRIVATE m ${SC_GFX_LIBS})
 target_compile_options(stock_dashboard PRIVATE
     $<$<CONFIG:Release>:-O3 -march=native -ffast-math>
 )
+endif()
 
 # ---------------------------------------------------------------------------
 # Test suite
@@ -174,7 +178,9 @@ endif()
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/ DESTINATION include/silvercore
     FILES_MATCHING PATTERN "*.h"
 )
-install(TARGETS stock_dashboard RUNTIME DESTINATION bin)
+if(TARGET stock_dashboard)
+    install(TARGETS stock_dashboard RUNTIME DESTINATION bin)
+endif()
 
 # ---------------------------------------------------------------------------
 # Summary
