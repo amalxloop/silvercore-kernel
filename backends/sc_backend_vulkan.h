@@ -659,9 +659,11 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
         exts[ext_count++] = "VK_KHR_surface";
 #if defined(VK_USE_PLATFORM_XCB_KHR)
         exts[ext_count++] = "VK_KHR_xcb_surface";
-#elif defined(VK_USE_PLATFORM_XLIB_KHR)
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
         exts[ext_count++] = "VK_KHR_xlib_surface";
-#elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
         exts[ext_count++] = "VK_KHR_wayland_surface";
 #endif
     }
@@ -773,6 +775,18 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
             xci.dpy    = (Display*)desc->native_display;
             xci.window = (Window)(uintptr_t)desc->native_window;
             r = vkCreateXlibSurfaceKHR(s->instance, &xci, NULL, &s->surface);
+            if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
+        } else
+#elif defined(VK_USE_PLATFORM_WAYLAND_KHR)
+        PFN_vkCreateWaylandSurfaceKHR vkCreateWaylandSurfaceKHR =
+            (PFN_vkCreateWaylandSurfaceKHR)vkGetInstanceProcAddr(
+                s->instance, "vkCreateWaylandSurfaceKHR");
+        if (vkCreateWaylandSurfaceKHR) {
+            VkWaylandSurfaceCreateInfoKHR wci = {0};
+            wci.sType  = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+            wci.display = (struct wl_display*)desc->native_display;
+            wci.surface = (struct wl_surface*)desc->native_window;
+            r = vkCreateWaylandSurfaceKHR(s->instance, &wci, NULL, &s->surface);
             if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
         } else
 #endif
