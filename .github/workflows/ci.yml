@@ -49,6 +49,30 @@ jobs:
             -lm -lvulkan -o /tmp/test_vk
           /tmp/test_vk
 
+  test-asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & test with AddressSanitizer
+        run: |
+          for t in test_arena test_math test_layout test_gfx test_runtime test_font; do
+            clang -I include -I tools -Wall -Wextra -Wpedantic -Wshadow \
+              -fsanitize=address -fno-omit-frame-pointer \
+              tests/${t}.c -lm -o /tmp/$t && /tmp/$t
+          done
+
+  test-ubsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & test with UndefinedBehaviorSanitizer
+        run: |
+          for t in test_arena test_math test_layout test_gfx test_runtime test_font; do
+            clang -I include -I tools -Wall -Wextra -Wpedantic -Wshadow \
+              -fsanitize=undefined -fno-sanitize-recover=undefined \
+              tests/${t}.c -lm -o /tmp/$t && /tmp/$t
+          done
+
   wasm:
     runs-on: ubuntu-latest
     steps:

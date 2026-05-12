@@ -117,6 +117,19 @@ typedef struct {
     VkSampler         sampler;
     VkDescriptorPool  desc_pool;
     VkDescriptorSet   desc_set;
+
+    /* User buffer storage */
+    VkBuffer         buf_buffers[SC_GFX_MAX_BUFFERS];
+    VkDeviceMemory   buf_mems[SC_GFX_MAX_BUFFERS];
+    VkDeviceSize     buf_sizes[SC_GFX_MAX_BUFFERS];
+
+    /* User shader modules */
+    VkShaderModule   shd_modules[SC_GFX_MAX_SHADERS];
+    VkShaderModule   shd_fs_modules[SC_GFX_MAX_SHADERS];
+
+    /* User pipelines */
+    VkPipeline       user_pipelines[SC_GFX_MAX_PIPELINES];
+    VkPipelineLayout user_pip_layouts[SC_GFX_MAX_PIPELINES];
 } _SCVkState;
 
 /* -------------------------------------------------------------------------
@@ -967,6 +980,24 @@ void sc_vulkan_shutdown(SCGfxContext *ctx) {
         if (f->submit_sem)    vkDestroySemaphore(s->device, f->submit_sem, NULL);
     }
 
+    /* Destroy user buffers */
+    for (u32 i = 0; i < SC_GFX_MAX_BUFFERS; i++) {
+        if (s->buf_buffers[i]) vkDestroyBuffer(s->device, s->buf_buffers[i], NULL);
+        if (s->buf_mems[i])    vkFreeMemory(s->device, s->buf_mems[i], NULL);
+    }
+
+    /* Destroy user shader modules */
+    for (u32 i = 0; i < SC_GFX_MAX_SHADERS; i++) {
+        if (s->shd_modules[i])    vkDestroyShaderModule(s->device, s->shd_modules[i], NULL);
+        if (s->shd_fs_modules[i]) vkDestroyShaderModule(s->device, s->shd_fs_modules[i], NULL);
+    }
+
+    /* Destroy user pipelines */
+    for (u32 i = 0; i < SC_GFX_MAX_PIPELINES; i++) {
+        if (s->user_pipelines[i])   vkDestroyPipeline(s->device, s->user_pipelines[i], NULL);
+        if (s->user_pip_layouts[i]) vkDestroyPipelineLayout(s->device, s->user_pip_layouts[i], NULL);
+    }
+
     /* Destroy textures */
     for (u32 i = 0; i < SC_GFX_MAX_TEXTURES; i++) {
         if (s->tex_views[i]) vkDestroyImageView(s->device, s->tex_views[i], NULL);
@@ -1062,6 +1093,264 @@ void sc_vulkan_begin_frame(SCGfxContext *ctx, SCColor clear) {
     s->in_frame = true;
 }
 
+/* -------------------------------------------------------------------------
+ * User buffer management
+ * ---------------------------------------------------------------------- */
+SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
+    SCGfxBuffer h = {0};
+    if (!ctx || !ctx->backend_data || !desc) return h;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+    if (!desc->data || desc->size == 0) return h;
+
+    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS);
+    if (id == 0) return h;
+    h.id = id;
+
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (desc->type == SC_BUFFER_INDEX)
+        usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    else
+        usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+
+    VkResult r = _sc_vk_create_buf(s->device, s->phy_dev, desc->size, usage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        &s->buf_buffers[id], &s->buf_mems[id]);
+    if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->buf_slots, id); h.id = 0; return h; }
+    s->buf_sizes[id] = desc->size;
+
+    /* Staging buffer for upload */
+    VkBuffer stage_buf;
+    VkDeviceMemory stage_mem;
+    r = _sc_vk_create_buf(s->device, s->phy_dev, desc->size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &stage_buf, &stage_mem);
+    if (r != VK_SUCCESS) {
+        vkDestroyBuffer(s->device, s->buf_buffers[id], NULL);
+        vkFreeMemory(s->device, s->buf_mems[id], NULL);
+        s->buf_buffers[id] = VK_NULL_HANDLE;
+        s->buf_mems[id] = VK_NULL_HANDLE;
+        _sc_gfx_free_slot(ctx->buf_slots, id);
+        h.id = 0;
+        return h;
+    }
+
+    void *data;
+    vkMapMemory(s->device, stage_mem, 0, desc->size, 0, &data);
+    memcpy(data, desc->data, desc->size);
+    vkUnmapMemory(s->device, stage_mem);
+
+    /* Use one-shot command buffer to copy */
+    VkCommandBufferAllocateInfo cai = {0};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = s->cmd_pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    vkAllocateCommandBuffers(s->device, &cai, &cb);
+
+    VkCommandBufferBeginInfo bi = {0};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+
+    VkBufferCopy region = {0, 0, desc->size};
+    vkCmdCopyBuffer(cb, stage_buf, s->buf_buffers[id], 1, &region);
+
+    vkEndCommandBuffer(cb);
+
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cb;
+    vkQueueSubmit(s->gfx_queue, 1, &si, VK_NULL_HANDLE);
+    vkDeviceWaitIdle(s->device);
+
+    vkFreeCommandBuffers(s->device, s->cmd_pool, 1, &cb);
+    vkDestroyBuffer(s->device, stage_buf, NULL);
+    vkFreeMemory(s->device, stage_mem, NULL);
+
+    return h;
+}
+
+void sc_vulkan_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
+    if (!ctx || !ctx->backend_data || buf.id == 0) return;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+    if (buf.id >= SC_GFX_MAX_BUFFERS) return;
+    if (s->buf_buffers[buf.id]) {
+        vkDeviceWaitIdle(s->device);
+        vkDestroyBuffer(s->device, s->buf_buffers[buf.id], NULL);
+        s->buf_buffers[buf.id] = VK_NULL_HANDLE;
+    }
+    if (s->buf_mems[buf.id]) {
+        vkFreeMemory(s->device, s->buf_mems[buf.id], NULL);
+        s->buf_mems[buf.id] = VK_NULL_HANDLE;
+    }
+    s->buf_sizes[buf.id] = 0;
+}
+
+void sc_vulkan_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
+                              const void *data, usize size) {
+    if (!ctx || !ctx->backend_data || buf.id == 0 || !data) return;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+    sc_vulkan_destroy_buffer(ctx, buf);
+    if (size == 0) return;
+    SCGfxBufferDesc desc = {.data = data, .size = size};
+    /* Re-create via make; need to re-alloc slot — re-use slot id */
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    VkResult r = _sc_vk_create_buf(s->device, s->phy_dev, size, usage,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        &s->buf_buffers[buf.id], &s->buf_mems[buf.id]);
+    if (r != VK_SUCCESS) return;
+    s->buf_sizes[buf.id] = size;
+
+    VkBuffer stage_buf;
+    VkDeviceMemory stage_mem;
+    r = _sc_vk_create_buf(s->device, s->phy_dev, size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &stage_buf, &stage_mem);
+    if (r != VK_SUCCESS) return;
+
+    void *map;
+    vkMapMemory(s->device, stage_mem, 0, size, 0, &map);
+    memcpy(map, data, size);
+    vkUnmapMemory(s->device, stage_mem);
+
+    VkCommandBufferAllocateInfo cai = {0};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = s->cmd_pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    vkAllocateCommandBuffers(s->device, &cai, &cb);
+
+    VkCommandBufferBeginInfo bi = {0};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+    VkBufferCopy region = {0, 0, size};
+    vkCmdCopyBuffer(cb, stage_buf, s->buf_buffers[buf.id], 1, &region);
+    vkEndCommandBuffer(cb);
+
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cb;
+    vkQueueSubmit(s->gfx_queue, 1, &si, VK_NULL_HANDLE);
+    vkDeviceWaitIdle(s->device);
+
+    vkFreeCommandBuffers(s->device, s->cmd_pool, 1, &cb);
+    vkDestroyBuffer(s->device, stage_buf, NULL);
+    vkFreeMemory(s->device, stage_mem, NULL);
+}
+
+/* -------------------------------------------------------------------------
+ * User shader management (store bytecode as VkShaderModule)
+ * ---------------------------------------------------------------------- */
+SCGfxShader sc_vulkan_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
+    SCGfxShader h = {0};
+    if (!ctx || !ctx->backend_data || !desc) return h;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+
+    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS);
+    if (id == 0) return h;
+    h.id = id;
+
+    if (desc->vs_bytecode && desc->vs_bytecode_size > 0) {
+        _sc_vk_make_shader(s->device, (const unsigned char*)desc->vs_bytecode,
+                           desc->vs_bytecode_size, &s->shd_modules[id]);
+    }
+    if (desc->fs_bytecode && desc->fs_bytecode_size > 0) {
+        _sc_vk_make_shader(s->device, (const unsigned char*)desc->fs_bytecode,
+                           desc->fs_bytecode_size, &s->shd_fs_modules[id]);
+    }
+    return h;
+}
+
+void sc_vulkan_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
+    if (!ctx || !ctx->backend_data || shd.id == 0) return;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+    if (shd.id >= SC_GFX_MAX_SHADERS) return;
+    if (s->shd_modules[shd.id]) {
+        vkDestroyShaderModule(s->device, s->shd_modules[shd.id], NULL);
+        s->shd_modules[shd.id] = VK_NULL_HANDLE;
+    }
+    if (s->shd_fs_modules[shd.id]) {
+        vkDestroyShaderModule(s->device, s->shd_fs_modules[shd.id], NULL);
+        s->shd_fs_modules[shd.id] = VK_NULL_HANDLE;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * User pipeline management (best-effort creation)
+ * ---------------------------------------------------------------------- */
+SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
+    SCGfxPipeline h = {0};
+    if (!ctx || !ctx->backend_data || !desc) return h;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+
+    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES);
+    if (id == 0) return h;
+    h.id = id;
+
+    /* Build a pipeline layout with push constants */
+    VkPushConstantRange pc = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4};
+    VkPipelineLayoutCreateInfo plci = {0};
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &pc;
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &s->ds_layout;
+    VkResult r = vkCreatePipelineLayout(s->device, &plci, NULL, &s->user_pip_layouts[id]);
+    if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->pip_slots, id); h.id = 0; return h; }
+
+    /* Use shader modules from the shader handle, or fallback to built-in */
+    u32 shd_id = desc->shader.id;
+    VkShaderModule vs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_modules[shd_id])
+                        ? s->shd_modules[shd_id] : s->shd_modules[0];
+    VkShaderModule fs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_fs_modules[shd_id])
+                        ? s->shd_fs_modules[shd_id] : s->shd_fs_modules[0];
+    /* If no user shaders, fallback to the built-in embedded SPIR-V */
+    if (!vs) { _sc_vk_make_shader(s->device, vk_vert_spv, vk_vert_spv_len, &vs); }
+    if (!fs) { _sc_vk_make_shader(s->device, vk_frag_spv, vk_frag_spv_len, &fs); }
+
+    r = _sc_vk_create_pipeline(s->device, vs, fs,
+                               s->user_pip_layouts[id], s->render_pass,
+                               &s->user_pipelines[id]);
+    if (r != VK_SUCCESS) {
+        vkDestroyPipelineLayout(s->device, s->user_pip_layouts[id], NULL);
+        s->user_pip_layouts[id] = VK_NULL_HANDLE;
+        _sc_gfx_free_slot(ctx->pip_slots, id);
+        h.id = 0;
+        return h;
+    }
+
+    /* Clean up temporary modules created from fallback */
+    if (vs != s->shd_modules[0] && vs != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(s->device, vs, NULL);
+    }
+    if (fs != s->shd_fs_modules[0] && fs != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(s->device, fs, NULL);
+    }
+
+    return h;
+}
+
+void sc_vulkan_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
+    if (!ctx || !ctx->backend_data || pip.id == 0) return;
+    _SCVkState *s = (_SCVkState*)ctx->backend_data;
+    if (pip.id >= SC_GFX_MAX_PIPELINES) return;
+    if (s->user_pipelines[pip.id]) {
+        vkDestroyPipeline(s->device, s->user_pipelines[pip.id], NULL);
+        s->user_pipelines[pip.id] = VK_NULL_HANDLE;
+    }
+    if (s->user_pip_layouts[pip.id]) {
+        vkDestroyPipelineLayout(s->device, s->user_pip_layouts[pip.id], NULL);
+        s->user_pip_layouts[pip.id] = VK_NULL_HANDLE;
+    }
+}
+
 void sc_vulkan_submit(SCGfxContext *ctx, const SCGfxDrawCmd *cmds, u32 count) {
     if (!ctx) return;
     ctx->frame_stats.draw_calls += count;
@@ -1104,7 +1393,6 @@ void sc_vulkan_end_frame(SCGfxContext *ctx) {
             u32 tex_id = ctx->batch_cmds[i].texture.id;
             u32 ht = tex_id != 0 ? 1u : 0u;
 
-            /* Update descriptor set if textured */
             if (tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES && s->tex_views[tex_id]) {
                 VkDescriptorImageInfo img_info = {0};
                 img_info.sampler     = s->sampler;
@@ -1126,6 +1414,61 @@ void sc_vulkan_end_frame(SCGfxContext *ctx) {
                 VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4, &ht);
             vkCmdDraw(cb, ctx->batch_cmds[i].vertex_count, 1,
                 ctx->batch_cmds[i].vertex_offset, 0);
+        }
+    }
+
+    /* Process user-submitted draw commands */
+    for (u32 i = 0; i < ctx->submit_ccount; i++) {
+        SCGfxDrawCmd *cmd = &ctx->submit_cmds[i];
+        u32 vb_id = cmd->vertex_buf.id;
+        if (vb_id == 0 || vb_id >= SC_GFX_MAX_BUFFERS) continue;
+        if (!s->buf_buffers[vb_id]) continue;
+
+        /* Bind user pipeline if specified, else use built-in */
+        u32 pip_id = cmd->pipeline.id;
+        VkPipeline cur_pip = (pip_id > 0 && pip_id < SC_GFX_MAX_PIPELINES &&
+                              s->user_pipelines[pip_id])
+                             ? s->user_pipelines[pip_id] : s->pipeline;
+        VkPipelineLayout cur_layout = (pip_id > 0 && pip_id < SC_GFX_MAX_PIPELINES &&
+                                       s->user_pip_layouts[pip_id])
+                                      ? s->user_pip_layouts[pip_id] : s->pipeline_layout;
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, cur_pip);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            cur_layout, 0, 1, &s->desc_set, 0, NULL);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cb, 0, 1, &s->buf_buffers[vb_id], &offset);
+
+        u32 tex_id = cmd->texture.id;
+        if (tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES && s->tex_views[tex_id]) {
+            VkDescriptorImageInfo img_info = {0};
+            img_info.sampler     = s->sampler;
+            img_info.imageView   = s->tex_views[tex_id];
+            img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet write = {0};
+            write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet          = s->desc_set;
+            write.dstBinding      = 0;
+            write.descriptorCount = 1;
+            write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo      = &img_info;
+            vkUpdateDescriptorSets(s->device, 1, &write, 0, NULL);
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                cur_layout, 0, 1, &s->desc_set, 0, NULL);
+        }
+
+        u32 ht = tex_id != 0 ? 1u : 0u;
+        vkCmdPushConstants(cb, cur_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4, &ht);
+
+        u32 ib_id = cmd->index_buf.id;
+        if (ib_id > 0 && ib_id < SC_GFX_MAX_BUFFERS && s->buf_buffers[ib_id]) {
+            vkCmdBindIndexBuffer(cb, s->buf_buffers[ib_id], 0, VK_INDEX_TYPE_UINT32);
+            u32 icount = cmd->index_count > 0 ? cmd->index_count
+                        : (u32)(s->buf_sizes[ib_id] / sizeof(u32));
+            vkCmdDrawIndexed(cb, icount, 1, cmd->base_index,
+                             (i32)cmd->base_vertex, 0);
+        } else {
+            vkCmdDraw(cb, cmd->vertex_count, 1, cmd->base_vertex, 0);
         }
     }
 

@@ -31,12 +31,22 @@
  *       stock_dashboard.c -o stock_dashboard -lm
  */
 
-#ifndef SC_NO_IMPLEMENTATION
+#ifndef SC_GFX_IMPLEMENTATION
 #define SC_GFX_IMPLEMENTATION
+#endif
+#ifndef SC_LAYOUT_IMPLEMENTATION
 #define SC_LAYOUT_IMPLEMENTATION
+#endif
+#ifndef SC_WIDGET_IMPLEMENTATION
 #define SC_WIDGET_IMPLEMENTATION
+#endif
+#ifndef SC_RUNTIME_IMPLEMENTATION
 #define SC_RUNTIME_IMPLEMENTATION
+#endif
+#ifndef SC_FONT_IMPLEMENTATION
 #define SC_FONT_IMPLEMENTATION
+#endif
+#ifndef SC_GFX_BACKEND_SOFTWARE
 #define SC_GFX_BACKEND_SOFTWARE
 #endif
 

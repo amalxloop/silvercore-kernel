@@ -297,7 +297,22 @@ SCGfxTexture sc_vulkan_make_texture (SCGfxContext *ctx,
                                      const SCGfxTextureDesc *desc);
 void         sc_vulkan_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
 SCResult sc_vulkan_resize      (SCGfxContext *ctx, u32 width, u32 height);
+SCGfxBuffer sc_vulkan_make_buffer   (SCGfxContext *ctx, const SCGfxBufferDesc *desc);
+void        sc_vulkan_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf);
+void        sc_vulkan_update_buffer (SCGfxContext *ctx, SCGfxBuffer buf,
+                                     const void *data, usize size);
+SCGfxShader  sc_vulkan_make_shader  (SCGfxContext *ctx, const SCGfxShaderDesc *desc);
+void         sc_vulkan_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
+SCGfxPipeline sc_vulkan_make_pipeline (SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
+void          sc_vulkan_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
 #endif
+
+/* ---- Software backend: buffer data store -------------------------------- */
+typedef struct {
+    u8    *data;
+    usize  size;
+    SCBufferType type;
+} _SCBufData;
 
 /* -------------------------------------------------------------------------
  * Implementation (software rasteriser only – other backends link separately)
@@ -328,10 +343,23 @@ struct SCGfxContext {
     /* Backend-specific data (e.g. _SCVkState for Vulkan) */
     void          *backend_data;
 
+    /* Software backend: buffer data storage */
+    _SCBufData     buf_data[SC_GFX_MAX_BUFFERS];
+
+    /* Software backend: shader desc storage */
+    SCGfxShaderDesc shd_desc[SC_GFX_MAX_SHADERS];
+
+    /* Software backend: pipeline desc storage */
+    SCGfxPipelineDesc pip_desc[SC_GFX_MAX_PIPELINES];
+
     /* Software rasteriser: framebuffer */
     u8            *framebuffer;  /* RGBA8, width*height*4 bytes */
     _SCTexData     tex_data[SC_GFX_MAX_TEXTURES];
     bool           rasterize;    /* if true, software rasterizes quads into framebuffer */
+
+    /* Submitted draw commands (retained for end_frame) */
+    SCGfxDrawCmd   submit_cmds[SC_GFX_MAX_CMDS];
+    u32            submit_ccount;
 
     /* 2-D batch */
     SCGfxVertex2D  batch_verts[_SC_MAX_2D_VERTS];
@@ -411,22 +439,75 @@ void sc_gfx_shutdown(SCGfxContext *ctx) {
         for (u32 i = 0; i < SC_GFX_MAX_TEXTURES; i++) {
             free(ctx->tex_data[i].pixels);
         }
+        for (u32 i = 0; i < SC_GFX_MAX_BUFFERS; i++) {
+            free(ctx->buf_data[i].data);
+        }
     }
     free(ctx->framebuffer);
     free(ctx);
 }
 
 SCGfxBuffer sc_gfx_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
-    SC_UNUSED(desc);
     u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS);
     SCGfxBuffer h = {id};
+    if (id == 0) return h;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        return sc_vulkan_make_buffer(ctx, desc);
+    }
+#endif
+    if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
+        _SCBufData *bd = &ctx->buf_data[id];
+        bd->type = desc->type;
+        bd->size = desc->size;
+        bd->data = NULL;
+        if (desc->data && desc->size > 0) {
+            bd->data = (u8*)malloc(desc->size);
+            if (!bd->data) {
+                _sc_gfx_free_slot(ctx->buf_slots, id);
+                h.id = 0;
+                return h;
+            }
+            memcpy(bd->data, desc->data, desc->size);
+        }
+    }
     return h;
 }
 void sc_gfx_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
                            const void *data, usize size) {
-    SC_UNUSED(ctx); SC_UNUSED(buf); SC_UNUSED(data); SC_UNUSED(size);
+    if (buf.id == 0 || !data) return;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        sc_vulkan_update_buffer(ctx, buf, data, size);
+        return;
+    }
+#endif
+    if (ctx->backend == SC_BACKEND_SOFTWARE) {
+        _SCBufData *bd = &ctx->buf_data[buf.id];
+        free(bd->data);
+        bd->data = NULL;
+        bd->size = 0;
+        if (size > 0) {
+            bd->data = (u8*)malloc(size);
+            if (bd->data) {
+                memcpy(bd->data, data, size);
+                bd->size = size;
+            }
+        }
+    }
 }
 void sc_gfx_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
+    if (buf.id == 0) return;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        sc_vulkan_destroy_buffer(ctx, buf);
+        return;
+    }
+#endif
+    if (ctx->backend == SC_BACKEND_SOFTWARE) {
+        free(ctx->buf_data[buf.id].data);
+        ctx->buf_data[buf.id].data = NULL;
+    }
     _sc_gfx_free_slot(ctx->buf_slots, buf.id);
 }
 
@@ -498,22 +579,52 @@ void sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
 }
 
 SCGfxShader sc_gfx_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
-    SC_UNUSED(desc);
     u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS);
     SCGfxShader h = {id};
+    if (id == 0) return h;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        return sc_vulkan_make_shader(ctx, desc);
+    }
+#endif
+    if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
+        ctx->shd_desc[id] = *desc;
+    }
     return h;
 }
 void sc_gfx_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
+    if (shd.id == 0) return;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        sc_vulkan_destroy_shader(ctx, shd);
+        return;
+    }
+#endif
     _sc_gfx_free_slot(ctx->shd_slots, shd.id);
 }
 
 SCGfxPipeline sc_gfx_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
-    SC_UNUSED(desc);
     u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES);
     SCGfxPipeline h = {id};
+    if (id == 0) return h;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        return sc_vulkan_make_pipeline(ctx, desc);
+    }
+#endif
+    if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
+        ctx->pip_desc[id] = *desc;
+    }
     return h;
 }
 void sc_gfx_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
+    if (pip.id == 0) return;
+#ifdef SC_GFX_BACKEND_VULKAN
+    if (ctx->backend == SC_BACKEND_VULKAN) {
+        sc_vulkan_destroy_pipeline(ctx, pip);
+        return;
+    }
+#endif
     _sc_gfx_free_slot(ctx->pip_slots, pip.id);
 }
 
@@ -521,6 +632,7 @@ void sc_gfx_begin_frame(SCGfxContext *ctx, SCColor c) {
     memset(&ctx->frame_stats, 0, sizeof(ctx->frame_stats));
     ctx->batch_vcount = 0;
     ctx->batch_ccount = 0;
+    ctx->submit_ccount = 0;
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         sc_vulkan_begin_frame(ctx, c);
@@ -545,6 +657,12 @@ void sc_gfx_submit(SCGfxContext *ctx, const SCGfxDrawCmd *cmds, u32 count) {
     for (u32 i = 0; i < count; i++) {
         ctx->frame_stats.vertex_count += cmds[i].vertex_count;
         ctx->frame_stats.index_count  += cmds[i].index_count;
+    }
+    u32 n = count < SC_GFX_MAX_CMDS - ctx->submit_ccount
+            ? count : SC_GFX_MAX_CMDS - ctx->submit_ccount;
+    if (n > 0) {
+        memcpy(&ctx->submit_cmds[ctx->submit_ccount], cmds, n * sizeof(SCGfxDrawCmd));
+        ctx->submit_ccount += n;
     }
 }
 
@@ -662,7 +780,6 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
         }
 
         u32 vo = cmd->vertex_offset;
-        /* Process triangles (groups of 3 vertices) */
         for (u32 j = 0; j + 2 < cmd->vertex_count; j += 3) {
             SCGfxVertex2D *v = &ctx->batch_verts[vo + j];
             SCVec2 p0 = {v[0].x, v[0].y}; SCVec2 t0 = {v[0].u, v[0].v};
@@ -675,6 +792,67 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
                 v[1].r, v[1].g, v[1].b, v[1].a,
                 v[2].r, v[2].g, v[2].b, v[2].a,
                 tex);
+        }
+    }
+
+    /* Process user-submitted draw commands */
+    for (u32 i = 0; i < ctx->submit_ccount; i++) {
+        SCGfxDrawCmd *cmd = &ctx->submit_cmds[i];
+        if (cmd->vertex_buf.id == 0) continue;
+        if (cmd->vertex_buf.id >= SC_GFX_MAX_BUFFERS) continue;
+        _SCBufData *vb = &ctx->buf_data[cmd->vertex_buf.id];
+        if (!vb->data) continue;
+
+        _SCTexData *tex = NULL;
+        if (cmd->texture.id > 0 && cmd->texture.id < SC_GFX_MAX_TEXTURES) {
+            tex = &ctx->tex_data[cmd->texture.id];
+        }
+
+        SCGfxVertex2D *verts = (SCGfxVertex2D*)vb->data;
+        u32 base_v = cmd->base_vertex;
+        u32 vcount = cmd->vertex_count;
+
+        if (cmd->index_buf.id > 0 && cmd->index_buf.id < SC_GFX_MAX_BUFFERS) {
+            _SCBufData *ib = &ctx->buf_data[cmd->index_buf.id];
+            if (ib->data && ib->type == SC_BUFFER_INDEX) {
+                u32 *indices = (u32*)ib->data;
+                u32 base_i = cmd->base_index;
+                u32 icount = cmd->index_count > 0 ? cmd->index_count : ib->size / sizeof(u32);
+                for (u32 j = 0; j + 2 < icount; j += 3) {
+                    u32 i0 = indices[base_i + j];
+                    u32 i1 = indices[base_i + j + 1];
+                    u32 i2 = indices[base_i + j + 2];
+                    usize max_v = vb->size / sizeof(SCGfxVertex2D);
+                    if (i0 >= max_v || i1 >= max_v || i2 >= max_v) continue;
+                    SCGfxVertex2D *v0 = &verts[i0];
+                    SCGfxVertex2D *v1 = &verts[i1];
+                    SCGfxVertex2D *v2 = &verts[i2];
+                    SCVec2 p0 = {v0->x, v0->y}; SCVec2 t0 = {v0->u, v0->v};
+                    SCVec2 p1 = {v1->x, v1->y}; SCVec2 t1 = {v1->u, v1->v};
+                    SCVec2 p2 = {v2->x, v2->y}; SCVec2 t2 = {v2->u, v2->v};
+                    _sc_raster_tri(ctx, p0,p1,p2, t0,t1,t2,
+                        v0->r,v0->g,v0->b,v0->a,
+                        v1->r,v1->g,v1->b,v1->a,
+                        v2->r,v2->g,v2->b,v2->a, tex);
+                }
+                continue;
+            }
+        }
+
+        /* Non-indexed draw */
+        u32 end = base_v + vcount;
+        if (end > vb->size / sizeof(SCGfxVertex2D)) {
+            end = (u32)(vb->size / sizeof(SCGfxVertex2D));
+        }
+        for (u32 j = base_v; j + 2 < end; j += 3) {
+            SCGfxVertex2D *v = &verts[j];
+            SCVec2 p0 = {v[0].x, v[0].y}; SCVec2 t0 = {v[0].u, v[0].v};
+            SCVec2 p1 = {v[1].x, v[1].y}; SCVec2 t1 = {v[1].u, v[1].v};
+            SCVec2 p2 = {v[2].x, v[2].y}; SCVec2 t2 = {v[2].u, v[2].v};
+            _sc_raster_tri(ctx, p0,p1,p2, t0,t1,t2,
+                v[0].r,v[0].g,v[0].b,v[0].a,
+                v[1].r,v[1].g,v[1].b,v[1].a,
+                v[2].r,v[2].g,v[2].b,v[2].a, tex);
         }
     }
 }
