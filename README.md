@@ -23,12 +23,12 @@ SilverCore removes the bridge. App logic, layout, animation, and rendering are a
 | Memory | `include/sc_arena.h` | Linear bump allocator + typed slab pool — zero `malloc` on the hot path |
 | Layout engine | `include/sc_layout.h` | Flexbox subset in C: row/column, flex-grow, flex-wrap, align-self, gap, justify-content, align-items, margin, padding |
 | Font system | `include/sc_font.h` | stb_truetype-based font rasterizer with glyph atlas caching and text rendering |
-| Graphics layer | `include/sc_gfx.h` | Backend-agnostic 2-D/3-D API (Vulkan / Software), dispatches to active backend |
+| Graphics layer | `include/sc_gfx.h` | Backend-agnostic 2-D/3-D API with full resource management: buffers, textures, shaders, pipelines, index buffers, batch 2-D helpers |
 | Widget/scene | `include/sc_widget.h` | Retained widget tree with animations, events, and layout sync |
 | Runtime | `include/sc_runtime.h` | Cooperative fiber scheduler, MPSC task queue, min-heap timer, 60 Hz loop |
-| Vulkan backend | `backends/sc_backend_vulkan.h` | Full Vulkan 1.0 implementation: swapchain, offscreen, shaders via embedded SPIR-V, push constants, batch rendering |
-| Metal backend | `backends/sc_backend_metal.h` | Metal surface stub |
-| D3D12 backend | `backends/sc_backend_d3d12.h` | D3D12 surface stub |
+| Vulkan backend | `backends/sc_backend_vulkan.h` | Full Vulkan 1.0 implementation: swapchain, offscreen, shaders via embedded SPIR-V, push constants, batch rendering, user buffer/shader/pipeline management, indexed draws |
+| Metal backend | `backends/sc_backend_metal.h` | Full API surface declared (make_buffer/destroy_buffer/make_texture/make_shader/make_pipeline etc.) |
+| D3D12 backend | `backends/sc_backend_d3d12.h` | Full API surface declared with SCD3D12Desc configuration |
 | Python bindings | `bindings/python/silvercore.py` | ctypes wrapper + simulation mode (no native lib required) |
 | WASM glue | `tools/wasm/silvercore.js` | Emscripten JS bridge, Canvas2D blit, requestAnimationFrame loop |
 | PoC app | `apps/stock_dashboard/` | 1 024-ticker stock dashboard, 60 Hz, zero heap allocs per frame |
@@ -43,16 +43,18 @@ The stock dashboard PoC renders **1 024 live-updating ticker cards** (each with 
 Tickers    : 1024
 Viewport   : 1280x720
 Target     : 60 Hz
-Cell size  : 34x18 px
+Cell size  : 35x16 px
 
 --- Benchmark results (300 frames) ---
-  Total time    : 5.034 s
-  Actual fps    : 59.5
+  Total time    : 5.035 s
+  Actual fps    : 59.6
   Draw calls/fr : 4103
   Verts/fr      : 24618
-  Scene memory  : 5.19 MB
+  Scene memory  : 5.28 MB
   Arena used    : 0.00 KB / 8192.00 KB   ← zero heap allocs per frame
 ```
+
+The PoC outputs a `silvercore.ppm` image of the final frame for visual inspection.
 
 ---
 
@@ -135,6 +137,18 @@ cmake --build build-wasm -j$(nproc)
 | `SC_UBSAN` | `OFF` | Enable UndefinedBehaviourSanitizer |
 | `WASM` | `OFF` | Emscripten WASM target |
 
+### CI pipeline
+
+The `.github/workflows/ci.yml` runs four jobs on every push and PR:
+
+| Job | What it does |
+|---|---|
+| `test-software` | Compiles all 6 tests + stock dashboard with `-Wall -Wextra -Wpedantic -Wshadow`, runs suite, produces PPM output |
+| `test-vulkan` | Compiles Vulkan backend header + headless test (requires `libvulkan-dev`) |
+| `test-asan` | Same tests with AddressSanitizer enabled |
+| `test-ubsan` | Same tests with UndefinedBehaviourSanitizer enabled |
+| `wasm` | Cross-compiles with Emscripten SDK, verifies `.wasm`/`.js` output |
+
 ---
 
 ## Python Scripting Layer
@@ -180,9 +194,9 @@ silvercore-kernel/
 │   ├── sc_widget.h       Widget tree, scene, animations
 │   └── sc_runtime.h      Fibers, tasks, timers, event loop
 ├── backends/
-│   ├── sc_backend_vulkan.h   Full Vulkan 1.0 backend
-│   ├── sc_backend_metal.h    Metal stub
-│   └── sc_backend_d3d12.h    D3D12 stub
+│   ├── sc_backend_vulkan.h   Full Vulkan 1.0 backend (buffers, shaders, pipelines, indexed draws)
+│   ├── sc_backend_metal.h    Metal stub (full API surface)
+│   └── sc_backend_d3d12.h    D3D12 stub (full API surface + SCD3D12Desc)
 ├── bindings/
 │   └── python/silvercore.py
 ├── tools/
