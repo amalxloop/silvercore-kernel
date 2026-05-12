@@ -145,12 +145,305 @@ static int test_destroy_invalid_handles(void) {
 }
 
 static int test_init_shutdown_no_resources(void) {
-    /* Init and shutdown without allocating any resources */
     SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 64, .height = 64};
     SCGfxContext *ctx = NULL;
     FAIL_UNLESS(sc_ok(sc_gfx_init(&desc, &ctx)), "init ok");
     sc_gfx_shutdown(ctx);
     PASS("init_shutdown_no_resources");
+    return 0;
+}
+
+/* ===== Buffer / shader / pipeline tests for resource management ========== */
+
+static int test_buffer_data_persist(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    u8 data_a[32] = {1,2,3,4};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=data_a,.size=sizeof(data_a)};
+    SCGfxBuffer buf = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(buf), "buf with data");
+
+    u8 data_b[64] = {5,6,7,8};
+    bd.data = data_b; bd.size = sizeof(data_b);
+    SCGfxBuffer buf2 = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(buf2), "buf2");
+    FAIL_UNLESS(buf.id != buf2.id, "distinct slot ids");
+
+    sc_gfx_destroy_buffer(ctx, buf);
+    sc_gfx_destroy_buffer(ctx, buf2);
+
+    /* Free-list should recycle one of the freed slots */
+    SCGfxBuffer buf3 = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(buf3), "recycled slot buf");
+    FAIL_UNLESS(buf3.id == buf.id || buf3.id == buf2.id, "slot reused");
+    sc_gfx_destroy_buffer(ctx, buf3);
+
+    sc_gfx_shutdown(ctx);
+    PASS("buffer_data_persist");
+    return 0;
+}
+
+static int test_buffer_update(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    u8 data[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=data,.size=sizeof(data)};
+    SCGfxBuffer buf = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(buf), "buf for update");
+
+    u8 new_data[8] = {100,101,102,103,104,105,106,107};
+    sc_gfx_update_buffer(ctx, buf, new_data, sizeof(new_data));
+
+    sc_gfx_destroy_buffer(ctx, buf);
+    sc_gfx_shutdown(ctx);
+    PASS("buffer_update");
+    return 0;
+}
+
+static int test_buffer_null_desc(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    /* NULL desc === zero-size buffer (slot allocated, no data) */
+    SCGfxBuffer buf = sc_gfx_make_buffer(ctx, NULL);
+    FAIL_UNLESS(sc_gfx_buf_valid(buf), "null desc -> valid (empty) buf");
+    sc_gfx_destroy_buffer(ctx, buf);
+
+    sc_gfx_shutdown(ctx);
+    PASS("buffer_null_desc");
+    return 0;
+}
+
+static int test_shader_pipeline_create(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxShaderDesc sd = {.vs_source="",.fs_source=""};
+    SCGfxShader shd = sc_gfx_make_shader(ctx, &sd);
+    FAIL_UNLESS(sc_gfx_shd_valid(shd), "shader valid");
+
+    SCGfxPipelineDesc pd = {.shader=shd,.prim_type=SC_PRIM_TRIANGLES};
+    SCGfxPipeline pip = sc_gfx_make_pipeline(ctx, &pd);
+    FAIL_UNLESS(sc_gfx_pip_valid(pip), "pipeline valid");
+
+    sc_gfx_destroy_pipeline(ctx, pip);
+    sc_gfx_destroy_shader(ctx, shd);
+    sc_gfx_shutdown(ctx);
+    PASS("shader_pipeline_create");
+    return 0;
+}
+
+static int test_shader_pipeline_null_desc(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    /* NULL desc allocates a slot (empty) */
+    SCGfxShader shd = sc_gfx_make_shader(ctx, NULL);
+    FAIL_UNLESS(sc_gfx_shd_valid(shd), "null shader desc -> valid (empty)");
+    sc_gfx_destroy_shader(ctx, shd);
+
+    SCGfxPipeline pip = sc_gfx_make_pipeline(ctx, NULL);
+    FAIL_UNLESS(sc_gfx_pip_valid(pip), "null pipeline desc -> valid (empty)");
+    sc_gfx_destroy_pipeline(ctx, pip);
+
+    sc_gfx_shutdown(ctx);
+    PASS("shader_pipeline_null_desc");
+    return 0;
+}
+
+/* ===== Submit command tests ============================================== */
+
+static int test_submit_user_vertex_buffer(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=128,.height=128};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[3] = {
+        {10,10, 0,0, 255,0,0,255},
+        {100,10, 0,0, 0,255,0,255},
+        {10,100, 0,0, 0,0,255,255},
+    };
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(vb), "vb for submit");
+
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+    SCGfxDrawCmd cmd = {0};
+    cmd.vertex_buf = vb;
+    cmd.vertex_count = 3;
+    sc_gfx_submit(ctx, &cmd, 1);
+    sc_gfx_end_frame(ctx);
+
+    SCGfxFrameStats s = sc_gfx_frame_stats(ctx);
+    FAIL_UNLESS(s.draw_calls >= 1, "submit recorded");
+    FAIL_UNLESS(s.vertex_count >= 3, "verts recorded");
+
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_shutdown(ctx);
+    PASS("submit_user_vertex_buffer");
+    return 0;
+}
+
+static int test_submit_index_buffer(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=128,.height=128};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[4] = {
+        {10,10, 0,0, 255,255,255,255},
+        {100,10, 1,0, 255,255,255,255},
+        {100,100, 1,1, 255,255,255,255},
+        {10,100, 0,1, 255,255,255,255},
+    };
+    u32 indices[6] = {0,1,2, 0,2,3};
+
+    SCGfxBufferDesc vbd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &vbd);
+    FAIL_UNLESS(sc_gfx_buf_valid(vb), "vb");
+
+    SCGfxBufferDesc ibd = {.type=SC_BUFFER_INDEX,.data=indices,.size=sizeof(indices)};
+    SCGfxBuffer ib = sc_gfx_make_buffer(ctx, &ibd);
+    FAIL_UNLESS(sc_gfx_buf_valid(ib), "ib");
+
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+    SCGfxDrawCmd cmd = {0};
+    cmd.vertex_buf = vb;
+    cmd.index_buf = ib;
+    cmd.vertex_count = 4;
+    cmd.index_count = 6;
+    cmd.base_vertex = 0;
+    cmd.base_index = 0;
+    sc_gfx_submit(ctx, &cmd, 1);
+    sc_gfx_end_frame(ctx);
+
+    SCGfxFrameStats s = sc_gfx_frame_stats(ctx);
+    FAIL_UNLESS(s.draw_calls >= 1, "indexed draw recorded");
+    FAIL_UNLESS(s.index_count >= 6, "index count recorded");
+
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_destroy_buffer(ctx, ib);
+    sc_gfx_shutdown(ctx);
+    PASS("submit_index_buffer");
+    return 0;
+}
+
+static int test_submit_with_texture(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    u8 texel[4] = {128,64,32,255};
+    SCGfxTextureDesc td = {.width=1,.height=1,.fmt=SC_PIXFMT_RGBA8,
+                            .data=texel,.data_size=4};
+    SCGfxTexture tex = sc_gfx_make_texture(ctx, &td);
+    FAIL_UNLESS(sc_gfx_tex_valid(tex), "tex");
+
+    SCGfxVertex2D verts[3] = {{0,0,0,0,255,255,255,255},
+                               {10,0,0,0,255,255,255,255},
+                               {0,10,0,0,255,255,255,255}};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(vb), "vb");
+
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+    SCGfxDrawCmd cmd = {0};
+    cmd.vertex_buf = vb;
+    cmd.texture = tex;
+    cmd.vertex_count = 3;
+    sc_gfx_submit(ctx, &cmd, 1);
+    sc_gfx_end_frame(ctx);
+
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_destroy_texture(ctx, tex);
+    sc_gfx_shutdown(ctx);
+    PASS("submit_with_texture");
+    return 0;
+}
+
+static int test_submit_multiple_cmds(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[3] = {{0,0,0,0,255,255,255,255},
+                               {1,0,0,0,255,255,255,255},
+                               {0,1,0,0,255,255,255,255}};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(vb), "vb");
+
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+    SCGfxDrawCmd cmds[3];
+    memset(cmds, 0, sizeof(cmds));
+    for (int i = 0; i < 3; i++) {
+        cmds[i].vertex_buf = vb;
+        cmds[i].vertex_count = 3;
+    }
+    sc_gfx_submit(ctx, cmds, 3);
+    sc_gfx_end_frame(ctx);
+
+    SCGfxFrameStats s = sc_gfx_frame_stats(ctx);
+    FAIL_UNLESS(s.draw_calls == 3, "3 draws recorded");
+
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_shutdown(ctx);
+    PASS("submit_multiple_cmds");
+    return 0;
+}
+
+static int test_submit_retained_across_frames(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[3] = {{0,0,0,0,255,255,255,255},
+                               {1,0,0,0,255,255,255,255},
+                               {0,1,0,0,255,255,255,255}};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(vb), "vb");
+
+    for (int f = 0; f < 3; f++) {
+        sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+        SCGfxDrawCmd cmd = {0};
+        cmd.vertex_buf = vb;
+        cmd.vertex_count = 3;
+        sc_gfx_submit(ctx, &cmd, 1);
+        sc_gfx_end_frame(ctx);
+    }
+
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_shutdown(ctx);
+    PASS("submit_retained_across_frames");
+    return 0;
+}
+
+static int test_multiple_buffers_and_clear(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[3] = {{0,0,0,0,255,255,255,255},
+                               {1,0,0,0,255,255,255,255},
+                               {0,1,0,0,255,255,255,255}};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer bufs[5];
+    for (int i = 0; i < 5; i++) {
+        bufs[i] = sc_gfx_make_buffer(ctx, &bd);
+        FAIL_UNLESS(sc_gfx_buf_valid(bufs[i]), "many bufs");
+    }
+    for (int i = 0; i < 5; i++) {
+        sc_gfx_destroy_buffer(ctx, bufs[i]);
+    }
+    sc_gfx_shutdown(ctx);
+    PASS("multiple_buffers_and_clear");
     return 0;
 }
 
@@ -166,6 +459,17 @@ int main(void) {
     fail += test_frame_stats_clean();
     fail += test_destroy_invalid_handles();
     fail += test_init_shutdown_no_resources();
+    fail += test_buffer_data_persist();
+    fail += test_buffer_update();
+    fail += test_buffer_null_desc();
+    fail += test_shader_pipeline_create();
+    fail += test_shader_pipeline_null_desc();
+    fail += test_submit_user_vertex_buffer();
+    fail += test_submit_index_buffer();
+    fail += test_submit_with_texture();
+    fail += test_submit_multiple_cmds();
+    fail += test_submit_retained_across_frames();
+    fail += test_multiple_buffers_and_clear();
     if (!fail) printf("All gfx tests passed.\n");
     return fail;
 }

@@ -1102,7 +1102,7 @@ SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
     if (!desc->data || desc->size == 0) return h;
 
-    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS);
+    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
     if (id == 0) return h;
     h.id = id;
 
@@ -1115,7 +1115,7 @@ SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc
     VkResult r = _sc_vk_create_buf(s->device, s->phy_dev, desc->size, usage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         &s->buf_buffers[id], &s->buf_mems[id]);
-    if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->buf_slots, id); h.id = 0; return h; }
+    if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->buf_slots, id, &ctx->buf_free_head); h.id = 0; return h; }
     s->buf_sizes[id] = desc->size;
 
     /* Staging buffer for upload */
@@ -1130,7 +1130,7 @@ SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc
         vkFreeMemory(s->device, s->buf_mems[id], NULL);
         s->buf_buffers[id] = VK_NULL_HANDLE;
         s->buf_mems[id] = VK_NULL_HANDLE;
-        _sc_gfx_free_slot(ctx->buf_slots, id);
+        _sc_gfx_free_slot(ctx->buf_slots, id, &ctx->buf_free_head);
         h.id = 0;
         return h;
     }
@@ -1253,7 +1253,7 @@ SCGfxShader sc_vulkan_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc
     if (!ctx || !ctx->backend_data || !desc) return h;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
 
-    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS);
+    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
     if (id == 0) return h;
     h.id = id;
 
@@ -1290,7 +1290,7 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
     if (!ctx || !ctx->backend_data || !desc) return h;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
 
-    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES);
+    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
     if (id == 0) return h;
     h.id = id;
 
@@ -1303,7 +1303,7 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &s->ds_layout;
     VkResult r = vkCreatePipelineLayout(s->device, &plci, NULL, &s->user_pip_layouts[id]);
-    if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->pip_slots, id); h.id = 0; return h; }
+    if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->pip_slots, id, &ctx->pip_free_head); h.id = 0; return h; }
 
     /* Use shader modules from the shader handle, or fallback to built-in */
     u32 shd_id = desc->shader.id;
@@ -1321,7 +1321,7 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
     if (r != VK_SUCCESS) {
         vkDestroyPipelineLayout(s->device, s->user_pip_layouts[id], NULL);
         s->user_pip_layouts[id] = VK_NULL_HANDLE;
-        _sc_gfx_free_slot(ctx->pip_slots, id);
+        _sc_gfx_free_slot(ctx->pip_slots, id, &ctx->pip_free_head);
         h.id = 0;
         return h;
     }

@@ -357,6 +357,12 @@ struct SCGfxContext {
     _SCTexData     tex_data[SC_GFX_MAX_TEXTURES];
     bool           rasterize;    /* if true, software rasterizes quads into framebuffer */
 
+    /* Free-list heads for O(1) slot allocation */
+    u32            buf_free_head;
+    u32            tex_free_head;
+    u32            shd_free_head;
+    u32            pip_free_head;
+
     /* Submitted draw commands (retained for end_frame) */
     SCGfxDrawCmd   submit_cmds[SC_GFX_MAX_CMDS];
     u32            submit_ccount;
@@ -377,15 +383,30 @@ SC_INLINE u8 _sc_f32_to_u8(f32 v) {
     return (u8)(v * 255.0f);
 }
 
-/* ---- ID helpers -------------------------------------------------------- */
-static u32 _sc_gfx_alloc_slot(_SCSlot *slots, u32 max) {
-    for (u32 i = 1; i < max; i++) {
-        if (!slots[i].live) { slots[i].live = true; return i; }
-    }
-    return 0;
+/* ---- Free-list helpers (O(1) slot alloc/free) ------------------------- */
+
+/* Thread a free-list through the gen field of inactive slots.
+   gen[slot] = next-free-index, 0 = end-of-list. */
+static void _sc_gfx_init_freelist(_SCSlot *slots, u32 max, u32 *head) {
+    *head = 1;
+    for (u32 i = 1; i < max; i++) slots[i].gen = i + 1;
+    slots[max - 1].gen = 0;
 }
-static void _sc_gfx_free_slot(_SCSlot *slots, u32 id) {
-    if (id > 0) { slots[id].live = false; slots[id].gen++; }
+
+static u32 _sc_gfx_alloc_slot(_SCSlot *slots, u32 max, u32 *head) {
+    (void)max;
+    u32 id = *head;
+    if (id == 0) return 0;
+    *head = slots[id].gen;
+    slots[id].live = true;
+    return id;
+}
+
+static void _sc_gfx_free_slot(_SCSlot *slots, u32 id, u32 *head) {
+    if (id == 0) return;
+    slots[id].live = false;
+    slots[id].gen = *head;
+    *head = id;
 }
 
 /* ---- Core API --------------------------------------------------------- */
@@ -399,6 +420,12 @@ SCResult sc_gfx_init(const SCGfxDesc *desc, SCGfxContext **out_ctx) {
     ctx->frame_arena  = desc->frame_arena;
     ctx->backend      = desc->backend != SC_BACKEND_AUTO
                         ? desc->backend : SC_BACKEND_SOFTWARE;
+
+    /* Initialize free-list slot allocators */
+    _sc_gfx_init_freelist(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
+    _sc_gfx_init_freelist(ctx->tex_slots, SC_GFX_MAX_TEXTURES, &ctx->tex_free_head);
+    _sc_gfx_init_freelist(ctx->shd_slots, SC_GFX_MAX_SHADERS,  &ctx->shd_free_head);
+    _sc_gfx_init_freelist(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
 
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
@@ -448,7 +475,7 @@ void sc_gfx_shutdown(SCGfxContext *ctx) {
 }
 
 SCGfxBuffer sc_gfx_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
-    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS);
+    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
     SCGfxBuffer h = {id};
     if (id == 0) return h;
 #ifdef SC_GFX_BACKEND_VULKAN
@@ -464,7 +491,7 @@ SCGfxBuffer sc_gfx_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
         if (desc->data && desc->size > 0) {
             bd->data = (u8*)malloc(desc->size);
             if (!bd->data) {
-                _sc_gfx_free_slot(ctx->buf_slots, id);
+                _sc_gfx_free_slot(ctx->buf_slots, id, &ctx->buf_free_head);
                 h.id = 0;
                 return h;
             }
@@ -508,7 +535,7 @@ void sc_gfx_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
         free(ctx->buf_data[buf.id].data);
         ctx->buf_data[buf.id].data = NULL;
     }
-    _sc_gfx_free_slot(ctx->buf_slots, buf.id);
+    _sc_gfx_free_slot(ctx->buf_slots, buf.id, &ctx->buf_free_head);
 }
 
 SCGfxTexture sc_gfx_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *desc) {
@@ -517,7 +544,7 @@ SCGfxTexture sc_gfx_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *desc
         return sc_vulkan_make_texture(ctx, desc);
     }
 #endif
-    u32 id = _sc_gfx_alloc_slot(ctx->tex_slots, SC_GFX_MAX_TEXTURES);
+    u32 id = _sc_gfx_alloc_slot(ctx->tex_slots, SC_GFX_MAX_TEXTURES, &ctx->tex_free_head);
     SCGfxTexture h = {id};
     if (id == 0) return h;
     if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
@@ -529,7 +556,7 @@ SCGfxTexture sc_gfx_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *desc
         usize sz  = (usize)desc->width * (usize)desc->height * bpp;
         td->pixels = (u8*)malloc(sz);
         if (!td->pixels) {
-            _sc_gfx_free_slot(ctx->tex_slots, id);
+            _sc_gfx_free_slot(ctx->tex_slots, id, &ctx->tex_free_head);
             h.id = 0;
             return h;
         }
@@ -567,7 +594,7 @@ void sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         sc_vulkan_destroy_texture(ctx, tex);
-        _sc_gfx_free_slot(ctx->tex_slots, tex.id);
+        _sc_gfx_free_slot(ctx->tex_slots, tex.id, &ctx->tex_free_head);
         return;
     }
 #endif
@@ -575,11 +602,11 @@ void sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
         free(ctx->tex_data[tex.id].pixels);
         ctx->tex_data[tex.id].pixels = NULL;
     }
-    _sc_gfx_free_slot(ctx->tex_slots, tex.id);
+    _sc_gfx_free_slot(ctx->tex_slots, tex.id, &ctx->tex_free_head);
 }
 
 SCGfxShader sc_gfx_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
-    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS);
+    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
     SCGfxShader h = {id};
     if (id == 0) return h;
 #ifdef SC_GFX_BACKEND_VULKAN
@@ -600,11 +627,11 @@ void sc_gfx_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
         return;
     }
 #endif
-    _sc_gfx_free_slot(ctx->shd_slots, shd.id);
+    _sc_gfx_free_slot(ctx->shd_slots, shd.id, &ctx->shd_free_head);
 }
 
 SCGfxPipeline sc_gfx_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
-    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES);
+    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
     SCGfxPipeline h = {id};
     if (id == 0) return h;
 #ifdef SC_GFX_BACKEND_VULKAN
@@ -625,7 +652,7 @@ void sc_gfx_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
         return;
     }
 #endif
-    _sc_gfx_free_slot(ctx->pip_slots, pip.id);
+    _sc_gfx_free_slot(ctx->pip_slots, pip.id, &ctx->pip_free_head);
 }
 
 void sc_gfx_begin_frame(SCGfxContext *ctx, SCColor c) {
