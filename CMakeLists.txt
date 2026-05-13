@@ -88,33 +88,9 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/tools)
 
 # ---------------------------------------------------------------------------
-# Core implementation TU
+# Core implementation TU (unity build: all _IMPLEMENTATION in one TU)
 # ---------------------------------------------------------------------------
-# The kernel is a "unity build": each header with _IMPLEMENTATION defined
-# is #included from sc_kernel.c.  This improves inlining across subsystems.
-file(WRITE ${CMAKE_BINARY_DIR}/sc_kernel.c
-    "/* Auto-generated unity build TU */\n"
-    "#define SC_GFX_IMPLEMENTATION\n"
-    "#define SC_LAYOUT_IMPLEMENTATION\n"
-    "#define SC_WIDGET_IMPLEMENTATION\n"
-    "#define SC_RUNTIME_IMPLEMENTATION\n"
-    "#define SC_FONT_IMPLEMENTATION\n"
-    "#define ${SC_GFX_BACKEND_DEF}\n"
-    "#include \"sc_types.h\"\n"
-    "#include \"sc_math.h\"\n"
-    "#include \"sc_arena.h\"\n"
-    "#include \"sc_layout.h\"\n"
-    "#include \"sc_gfx.h\"\n"
-    "#include \"sc_font.h\"\n"
-    "#include \"sc_widget.h\"\n"
-    "#include \"sc_runtime.h\"\n"
-    "#ifdef SC_GFX_BACKEND_VULKAN\n"
-    "#define SC_BACKEND_VULKAN_IMPLEMENTATION\n"
-    "#include \"sc_backend_vulkan.h\"\n"
-    "#endif\n"
-)
-
-set(KERNEL_SOURCES ${CMAKE_BINARY_DIR}/sc_kernel.c)
+set(KERNEL_SOURCES ${CMAKE_SOURCE_DIR}/src/sc_kernel.c)
 
 # ---------------------------------------------------------------------------
 # Static library

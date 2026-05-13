@@ -100,9 +100,20 @@ typedef struct {
     VkPipeline            pipeline;
     VkDescriptorSetLayout ds_layout;
 
-    /* Extent */
+    /* Extent / MSAA */
     u32               width, height;
+    VkSampleCountFlagBits samples;
     bool              headless;
+
+    /* Per-swapchain MSAA color attachments (when samples > 1) */
+    VkImage         *msaa_images;
+    VkDeviceMemory  *msaa_mems;
+    VkImageView     *msaa_views;
+
+    /* Headless resolve target (when samples > 1, headless mode) */
+    VkImage           os_resolve_image;
+    VkDeviceMemory    os_resolve_mem;
+    VkImageView       os_resolve_view;
 
     VkCommandPool     cmd_pool;
     _SCVkFrame        frames[SC_VK_FRAME_OVERLAP];
@@ -208,6 +219,7 @@ static VkResult _sc_vk_make_view(VkDevice dev, VkImage img, VkFormat fmt,
 static VkResult _sc_vk_create_pipeline(VkDevice dev,
     VkShaderModule vs, VkShaderModule fs,
     VkPipelineLayout layout, VkRenderPass rp,
+    VkSampleCountFlagBits samples,
     VkPipeline *out) {
 
     VkPipelineShaderStageCreateInfo stages[2] = {{0},{0}};
@@ -268,7 +280,7 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
 
     VkPipelineMultisampleStateCreateInfo ms = {0};
     ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = samples;
 
     VkPipelineColorBlendAttachmentState bl = {0};
     bl.blendEnable    = VK_TRUE;
@@ -302,18 +314,57 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
 }
 
 /* -------------------------------------------------------------------------
- * Render pass
+ * Render pass (supports MSAA resolve when samples > 1)
  * ---------------------------------------------------------------------- */
 static VkResult _sc_vk_create_rp(VkDevice dev, VkFormat fmt,
+                                  VkSampleCountFlagBits samples,
                                   VkRenderPass *out, bool present) {
-    VkAttachmentDescription att = {0};
-    att.format  = fmt;
-    att.samples = VK_SAMPLE_COUNT_1_BIT;
-    att.loadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    att.finalLayout   = present ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                                : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentDescription att[2] = {{0},{0}};
+    u32 att_count;
+
+    if (samples > VK_SAMPLE_COUNT_1_BIT) {
+        /* Attachment 0: MSAA color */
+        att[0].format  = fmt;
+        att[0].samples = samples;
+        att[0].loadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[0].finalLayout   = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        /* Attachment 1: Resolve target (single-sampled) */
+        att[1].format  = fmt;
+        att[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        att[1].loadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[1].finalLayout   = present ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                       : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference resolve_ref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription sp = {0};
+        sp.pipelineBindPoint     = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sp.colorAttachmentCount  = 1;
+        sp.pColorAttachments     = &color_ref;
+        sp.pResolveAttachments   = &resolve_ref;
+
+        VkRenderPassCreateInfo ci = {0};
+        ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = 2; ci.pAttachments = att;
+        ci.subpassCount    = 1; ci.pSubpasses   = &sp;
+        att_count = 2;
+        return vkCreateRenderPass(dev, &ci, NULL, out);
+    }
+
+    /* Single-sampled (fast path) */
+    att[0].format  = fmt;
+    att[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[0].loadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att[0].finalLayout   = present ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                   : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
 
@@ -324,8 +375,8 @@ static VkResult _sc_vk_create_rp(VkDevice dev, VkFormat fmt,
 
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    ci.attachmentCount = 1; ci.pAttachments = &att;
-    ci.subpassCount    = 1; ci.pSubpasses    = &sp;
+    ci.attachmentCount = 1; ci.pAttachments = att;
+    ci.subpassCount    = 1; ci.pSubpasses   = &sp;
     return vkCreateRenderPass(dev, &ci, NULL, out);
 }
 
@@ -334,7 +385,9 @@ static VkResult _sc_vk_create_rp(VkDevice dev, VkFormat fmt,
  * ---------------------------------------------------------------------- */
 static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
     VkQueue queue, u32 w, u32 h, VkFormat fmt, VkRenderPass rp,
-    VkImage *img, VkDeviceMemory *mem, VkImageView *view, VkFramebuffer *fbo) {
+    VkSampleCountFlagBits samples,
+    VkImage *img, VkDeviceMemory *mem, VkImageView *view, VkFramebuffer *fbo,
+    VkImage *resolve_img, VkDeviceMemory *resolve_mem, VkImageView *resolve_view) {
 
     VkImageCreateInfo ici = {0};
     ici.sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -342,7 +395,7 @@ static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
     ici.format    = fmt;
     ici.extent    = (VkExtent3D){w, h, 1};
     ici.mipLevels = 1; ici.arrayLayers = 1;
-    ici.samples   = VK_SAMPLE_COUNT_1_BIT;
+    ici.samples   = samples;
     ici.tiling    = VK_IMAGE_TILING_OPTIMAL;
     ici.usage     = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -364,7 +417,41 @@ static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
     r = _sc_vk_make_view(dev, *img, fmt, view);
     if (r != VK_SUCCESS) return r;
 
-    /* Transition layout to color-attachment-optimal */
+    /* Create resolve target for MSAA */
+    if (samples > VK_SAMPLE_COUNT_1_BIT) {
+        VkImageCreateInfo rci = {0};
+        rci.sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        rci.imageType = VK_IMAGE_TYPE_2D;
+        rci.format    = fmt;
+        rci.extent    = (VkExtent3D){w, h, 1};
+        rci.mipLevels = 1; rci.arrayLayers = 1;
+        rci.samples   = VK_SAMPLE_COUNT_1_BIT;
+        rci.tiling    = VK_IMAGE_TILING_OPTIMAL;
+        rci.usage     = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        rci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        r = vkCreateImage(dev, &rci, NULL, resolve_img);
+        if (r != VK_SUCCESS) return r;
+
+        VkMemoryRequirements rmr;
+        vkGetImageMemoryRequirements(dev, *resolve_img, &rmr);
+        VkMemoryAllocateInfo rai = {0};
+        rai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        rai.allocationSize = rmr.size;
+        rai.memoryTypeIndex = _sc_vk_find_mem_type(phy, rmr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        r = vkAllocateMemory(dev, &rai, NULL, resolve_mem);
+        if (r != VK_SUCCESS) { vkDestroyImage(dev, *resolve_img, NULL); return r; }
+        vkBindImageMemory(dev, *resolve_img, *resolve_mem, 0);
+
+        r = _sc_vk_make_view(dev, *resolve_img, fmt, resolve_view);
+        if (r != VK_SUCCESS) return r;
+    } else {
+        *resolve_img = VK_NULL_HANDLE;
+        *resolve_mem = VK_NULL_HANDLE;
+        *resolve_view = VK_NULL_HANDLE;
+    }
+
+    /* Transition layouts to color-attachment-optimal */
     VkCommandPoolCreateInfo cpci = {0};
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -385,19 +472,33 @@ static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
 
-    VkImageMemoryBarrier barrier = {0};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = *img;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
+    VkImageMemoryBarrier barriers[2] = {{0},{0}};
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].image = *img;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    u32 barrier_count = 1;
+    if (samples > VK_SAMPLE_COUNT_1_BIT) {
+        barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[1].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].image = *resolve_img;
+        barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barriers[1].subresourceRange.levelCount = 1;
+        barriers[1].subresourceRange.layerCount = 1;
+        barrier_count = 2;
+    }
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-        0, NULL, 0, NULL, 1, &barrier);
+        0, NULL, 0, NULL, barrier_count, barriers);
     vkEndCommandBuffer(cb);
 
     VkSubmitInfo si = {0};
@@ -407,10 +508,22 @@ static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
     vkDeviceWaitIdle(dev);
     vkDestroyCommandPool(dev, tmp_pool, NULL);
 
+    VkImageView fb_attachments[2];
+    u32 att_count;
+    if (samples > VK_SAMPLE_COUNT_1_BIT) {
+        fb_attachments[0] = *view;
+        fb_attachments[1] = *resolve_view;
+        att_count = 2;
+    } else {
+        fb_attachments[0] = *view;
+        att_count = 1;
+    }
+
     VkFramebufferCreateInfo fci = {0};
     fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fci.renderPass = rp;
-    fci.attachmentCount = 1; fci.pAttachments = view;
+    fci.attachmentCount = att_count;
+    fci.pAttachments = fb_attachments;
     fci.width = w; fci.height = h; fci.layers = 1;
     return vkCreateFramebuffer(dev, &fci, NULL, fbo);
 }
@@ -420,9 +533,11 @@ static VkResult _sc_vk_create_offscreen(VkDevice dev, VkPhysicalDevice phy,
  * ---------------------------------------------------------------------- */
 static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
     VkSurfaceKHR surface, u32 width, u32 height, VkFormat fmt, VkRenderPass rp,
+    VkSampleCountFlagBits samples,
     VkSwapchainKHR *out_swap, u32 *out_len,
     VkImage **out_images, VkImageView **out_views, VkFramebuffer **out_fbos,
-    VkFormat *out_fmt) {
+    VkFormat *out_fmt,
+    VkImage **out_msaa_images, VkDeviceMemory **out_msaa_mems, VkImageView **out_msaa_views) {
 
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phy, surface, &caps);
@@ -477,13 +592,68 @@ static VkResult _sc_vk_create_swapchain(VkDevice dev, VkPhysicalDevice phy,
     }
     vkGetSwapchainImagesKHR(dev, *out_swap, out_len, *out_images);
 
+    /* Allocate MSAA arrays if needed */
+    if (samples > VK_SAMPLE_COUNT_1_BIT) {
+        *out_msaa_images = (VkImage*)calloc(*out_len, sizeof(VkImage));
+        *out_msaa_mems   = (VkDeviceMemory*)calloc(*out_len, sizeof(VkDeviceMemory));
+        *out_msaa_views  = (VkImageView*)calloc(*out_len, sizeof(VkImageView));
+        if (!*out_msaa_images || !*out_msaa_mems || !*out_msaa_views) {
+            free(*out_msaa_images); *out_msaa_images = NULL;
+            free(*out_msaa_mems);   *out_msaa_mems   = NULL;
+            free(*out_msaa_views);  *out_msaa_views  = NULL;
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+    } else {
+        *out_msaa_images = NULL;
+        *out_msaa_mems   = NULL;
+        *out_msaa_views  = NULL;
+    }
+
     for (u32 i = 0; i < *out_len; i++) {
         _sc_vk_make_view(dev, (*out_images)[i], sf.format, &(*out_views)[i]);
+
+        VkImageView fb_attachments[2];
+        u32 att_count;
+
+        if (samples > VK_SAMPLE_COUNT_1_BIT) {
+            /* Create per-swapchain MSAA color image */
+            VkImageCreateInfo ici = {0};
+            ici.sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            ici.imageType = VK_IMAGE_TYPE_2D;
+            ici.format    = sf.format;
+            ici.extent    = (VkExtent3D){extent.width, extent.height, 1};
+            ici.mipLevels = 1; ici.arrayLayers = 1;
+            ici.samples   = samples;
+            ici.tiling    = VK_IMAGE_TILING_OPTIMAL;
+            ici.usage     = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            vkCreateImage(dev, &ici, NULL, &(*out_msaa_images)[i]);
+
+            VkMemoryRequirements mr;
+            vkGetImageMemoryRequirements(dev, (*out_msaa_images)[i], &mr);
+            VkMemoryAllocateInfo ai = {0};
+            ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai.allocationSize = mr.size;
+            ai.memoryTypeIndex = _sc_vk_find_mem_type(phy, mr.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            vkAllocateMemory(dev, &ai, NULL, &(*out_msaa_mems)[i]);
+            vkBindImageMemory(dev, (*out_msaa_images)[i], (*out_msaa_mems)[i], 0);
+
+            _sc_vk_make_view(dev, (*out_msaa_images)[i], sf.format, &(*out_msaa_views)[i]);
+
+            fb_attachments[0] = (*out_msaa_views)[i];
+            fb_attachments[1] = (*out_views)[i];
+            att_count = 2;
+        } else {
+            fb_attachments[0] = (*out_views)[i];
+            att_count = 1;
+        }
+
         VkFramebufferCreateInfo fci = {0};
         fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fci.renderPass      = rp;
-        fci.attachmentCount = 1;
-        fci.pAttachments    = &(*out_views)[i];
+        fci.attachmentCount = att_count;
+        fci.pAttachments    = fb_attachments;
         fci.width  = extent.width;
         fci.height = extent.height;
         fci.layers = 1;
@@ -500,10 +670,18 @@ static void _sc_vk_destroy_swapchain_resources(VkDevice dev, _SCVkState *s) {
     for (u32 i = 0; i < s->swap_len; i++) {
         if (s->swap_fbos[i])  vkDestroyFramebuffer(dev, s->swap_fbos[i], NULL);
         if (s->swap_views[i]) vkDestroyImageView(dev, s->swap_views[i], NULL);
+        if (s->msaa_images && s->msaa_images[i]) {
+            vkDestroyImageView(dev, s->msaa_views[i], NULL);
+            vkDestroyImage(dev, s->msaa_images[i], NULL);
+            vkFreeMemory(dev, s->msaa_mems[i], NULL);
+        }
     }
     free(s->swap_images); s->swap_images = NULL;
     free(s->swap_views);  s->swap_views  = NULL;
     free(s->swap_fbos);   s->swap_fbos   = NULL;
+    free(s->msaa_images); s->msaa_images = NULL;
+    free(s->msaa_mems);   s->msaa_mems   = NULL;
+    free(s->msaa_views);  s->msaa_views  = NULL;
     if (s->swapchain) vkDestroySwapchainKHR(dev, s->swapchain, NULL);
     s->swapchain = VK_NULL_HANDLE;
     s->swap_len  = 0;
@@ -516,10 +694,11 @@ static VkResult _sc_vk_recreate_swapchain(_SCVkState *s) {
     vkDeviceWaitIdle(s->device);
     _sc_vk_destroy_swapchain_resources(s->device, s);
     return _sc_vk_create_swapchain(s->device, s->phy_dev, s->surface,
-        s->width, s->height, s->swap_fmt, s->render_pass,
+        s->width, s->height, s->swap_fmt, s->render_pass, s->samples,
         &s->swapchain, &s->swap_len,
         &s->swap_images, &s->swap_views, &s->swap_fbos,
-        &s->swap_fmt);
+        &s->swap_fmt,
+        &s->msaa_images, &s->msaa_mems, &s->msaa_views);
 }
 
 /* -------------------------------------------------------------------------
@@ -684,6 +863,58 @@ static VkResult _sc_vk_upload_tex_data(VkDevice dev, VkPhysicalDevice phy,
     return VK_SUCCESS;
 }
 
+/* -------------------------------------------------------------------------
+ * Staging upload for device-local buffers (one-shot copy)
+ * ---------------------------------------------------------------------- */
+static VkResult _sc_vk_staging_upload(VkDevice dev, VkPhysicalDevice phy,
+    VkQueue queue, VkCommandPool pool,
+    VkBuffer dst, VkDeviceSize size, const void *data) {
+    if (!data || size == 0) return VK_SUCCESS;
+
+    VkBuffer stage_buf;
+    VkDeviceMemory stage_mem;
+    VkResult r = _sc_vk_create_buf(dev, phy, size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &stage_buf, &stage_mem);
+    if (r != VK_SUCCESS) return r;
+
+    void *map;
+    vkMapMemory(dev, stage_mem, 0, size, 0, &map);
+    memcpy(map, data, (usize)size);
+    vkUnmapMemory(dev, stage_mem);
+
+    VkCommandBufferAllocateInfo cai = {0};
+    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cai.commandPool = pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkCommandBuffer cb;
+    vkAllocateCommandBuffers(dev, &cai, &cb);
+
+    VkCommandBufferBeginInfo bi = {0};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+
+    VkBufferCopy region = {0, 0, size};
+    vkCmdCopyBuffer(cb, stage_buf, dst, 1, &region);
+
+    vkEndCommandBuffer(cb);
+
+    VkSubmitInfo si = {0};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cb;
+    vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+    vkDeviceWaitIdle(dev);
+
+    vkFreeCommandBuffers(dev, pool, 1, &cb);
+    vkDestroyBuffer(dev, stage_buf, NULL);
+    vkFreeMemory(dev, stage_mem, NULL);
+    return VK_SUCCESS;
+}
+
 /* =========================================================================
  * Public API
  * ========================================================================= */
@@ -763,6 +994,22 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
         }
     }
     free(phys);
+
+    /* ---- MSAA sample count ------------------------------------------- */
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(s->phy_dev, &props);
+        VkSampleCountFlags fb_samples = props.limits.framebufferColorSampleCounts;
+        u32 want = desc->sample_count;
+        VkSampleCountFlagBits sc = VK_SAMPLE_COUNT_1_BIT;
+        if (want >= 64 && (fb_samples & VK_SAMPLE_COUNT_64_BIT)) sc = VK_SAMPLE_COUNT_64_BIT;
+        else if (want >= 32 && (fb_samples & VK_SAMPLE_COUNT_32_BIT)) sc = VK_SAMPLE_COUNT_32_BIT;
+        else if (want >= 16 && (fb_samples & VK_SAMPLE_COUNT_16_BIT)) sc = VK_SAMPLE_COUNT_16_BIT;
+        else if (want >= 8 && (fb_samples & VK_SAMPLE_COUNT_8_BIT)) sc = VK_SAMPLE_COUNT_8_BIT;
+        else if (want >= 4 && (fb_samples & VK_SAMPLE_COUNT_4_BIT)) sc = VK_SAMPLE_COUNT_4_BIT;
+        else if (want >= 2 && (fb_samples & VK_SAMPLE_COUNT_2_BIT)) sc = VK_SAMPLE_COUNT_2_BIT;
+        s->samples = sc;
+    }
 
     /* ---- Queue family ------------------------------------------------ */
     u32 qf_count;
@@ -854,7 +1101,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     VkFormat fmt = VK_FORMAT_B8G8R8A8_UNORM;
 
     /* ---- Render pass -------------------------------------------------- */
-    r = _sc_vk_create_rp(s->device, fmt, &s->render_pass, !s->headless);
+    r = _sc_vk_create_rp(s->device, fmt, s->samples, &s->render_pass, !s->headless);
     if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
 
     /* ---- Descriptor set layout (for texture sampler) ------------------ */
@@ -888,7 +1135,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
 
     /* ---- Graphics pipeline -------------------------------------------- */
     r = _sc_vk_create_pipeline(s->device, vs, fs, s->pipeline_layout,
-                                s->render_pass, &s->pipeline);
+                                s->render_pass, s->samples, &s->pipeline);
     vkDestroyShaderModule(s->device, fs, NULL);
     vkDestroyShaderModule(s->device, vs, NULL);
     if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
@@ -896,15 +1143,17 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     /* ---- Swapchain / offscreen ---------------------------------------- */
     if (s->headless) {
         r = _sc_vk_create_offscreen(s->device, s->phy_dev, s->gfx_queue,
-            s->width, s->height, fmt, s->render_pass,
-            &s->os_image, &s->os_mem, &s->os_view, &s->os_fbo);
+            s->width, s->height, fmt, s->render_pass, s->samples,
+            &s->os_image, &s->os_mem, &s->os_view, &s->os_fbo,
+            &s->os_resolve_image, &s->os_resolve_mem, &s->os_resolve_view);
         if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
     } else {
         r = _sc_vk_create_swapchain(s->device, s->phy_dev, s->surface,
-            s->width, s->height, fmt, s->render_pass,
+            s->width, s->height, fmt, s->render_pass, s->samples,
             &s->swapchain, &s->swap_len,
             &s->swap_images, &s->swap_views, &s->swap_fbos,
-            &s->swap_fmt);
+            &s->swap_fmt,
+            &s->msaa_images, &s->msaa_mems, &s->msaa_views);
         if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
     }
 
@@ -1019,15 +1268,11 @@ void sc_vulkan_shutdown(SCGfxContext *ctx) {
         if (s->os_view)  vkDestroyImageView(s->device, s->os_view, NULL);
         if (s->os_image) vkDestroyImage(s->device, s->os_image, NULL);
         if (s->os_mem)   vkFreeMemory(s->device, s->os_mem, NULL);
+        if (s->os_resolve_view)  vkDestroyImageView(s->device, s->os_resolve_view, NULL);
+        if (s->os_resolve_image) vkDestroyImage(s->device, s->os_resolve_image, NULL);
+        if (s->os_resolve_mem)   vkFreeMemory(s->device, s->os_resolve_mem, NULL);
     } else {
-        for (u32 i = 0; i < s->swap_len; i++) {
-            if (s->swap_fbos[i])   vkDestroyFramebuffer(s->device, s->swap_fbos[i], NULL);
-            if (s->swap_views[i])  vkDestroyImageView(s->device, s->swap_views[i], NULL);
-        }
-        free(s->swap_images);
-        free(s->swap_views);
-        free(s->swap_fbos);
-        if (s->swapchain) vkDestroySwapchainKHR(s->device, s->swapchain, NULL);
+        _sc_vk_destroy_swapchain_resources(s->device, s);
         if (s->surface)   vkDestroySurfaceKHR(s->instance, s->surface, NULL);
     }
 
@@ -1065,11 +1310,13 @@ void sc_vulkan_begin_frame(SCGfxContext *ctx, SCColor clear) {
 
     VkFramebuffer fb = s->headless ? s->os_fbo : s->swap_fbos[s->cur_image];
 
-    VkClearValue cv = {0};
-    cv.color.float32[0] = clear.r;
-    cv.color.float32[1] = clear.g;
-    cv.color.float32[2] = clear.b;
-    cv.color.float32[3] = clear.a;
+    VkClearValue cv[2] = {{0},{0}};
+    cv[0].color.float32[0] = clear.r;
+    cv[0].color.float32[1] = clear.g;
+    cv[0].color.float32[2] = clear.b;
+    cv[0].color.float32[3] = clear.a;
+
+    bool msaa = s->samples > VK_SAMPLE_COUNT_1_BIT;
 
     VkRenderPassBeginInfo rpbi = {0};
     rpbi.sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1079,8 +1326,8 @@ void sc_vulkan_begin_frame(SCGfxContext *ctx, SCColor clear) {
     rpbi.renderArea.offset.y = 0;
     rpbi.renderArea.extent.width  = s->width;
     rpbi.renderArea.extent.height = s->height;
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues    = &cv;
+    rpbi.clearValueCount = msaa ? 2 : 1;
+    rpbi.pClearValues    = cv;
     vkCmdBeginRenderPass(f->cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(f->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipeline);
@@ -1118,13 +1365,8 @@ SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc
     if (r != VK_SUCCESS) { _sc_gfx_free_slot(ctx->buf_slots, id, &ctx->buf_free_head); h.id = 0; return h; }
     s->buf_sizes[id] = desc->size;
 
-    /* Staging buffer for upload */
-    VkBuffer stage_buf;
-    VkDeviceMemory stage_mem;
-    r = _sc_vk_create_buf(s->device, s->phy_dev, desc->size,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        &stage_buf, &stage_mem);
+    r = _sc_vk_staging_upload(s->device, s->phy_dev, s->gfx_queue,
+        s->cmd_pool, s->buf_buffers[id], desc->size, desc->data);
     if (r != VK_SUCCESS) {
         vkDestroyBuffer(s->device, s->buf_buffers[id], NULL);
         vkFreeMemory(s->device, s->buf_mems[id], NULL);
@@ -1134,42 +1376,6 @@ SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc
         h.id = 0;
         return h;
     }
-
-    void *data;
-    vkMapMemory(s->device, stage_mem, 0, desc->size, 0, &data);
-    memcpy(data, desc->data, desc->size);
-    vkUnmapMemory(s->device, stage_mem);
-
-    /* Use one-shot command buffer to copy */
-    VkCommandBufferAllocateInfo cai = {0};
-    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cai.commandPool = s->cmd_pool;
-    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    VkCommandBuffer cb;
-    vkAllocateCommandBuffers(s->device, &cai, &cb);
-
-    VkCommandBufferBeginInfo bi = {0};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cb, &bi);
-
-    VkBufferCopy region = {0, 0, desc->size};
-    vkCmdCopyBuffer(cb, stage_buf, s->buf_buffers[id], 1, &region);
-
-    vkEndCommandBuffer(cb);
-
-    VkSubmitInfo si = {0};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cb;
-    vkQueueSubmit(s->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vkDeviceWaitIdle(s->device);
-
-    vkFreeCommandBuffers(s->device, s->cmd_pool, 1, &cb);
-    vkDestroyBuffer(s->device, stage_buf, NULL);
-    vkFreeMemory(s->device, stage_mem, NULL);
-
     return h;
 }
 
@@ -1195,54 +1401,14 @@ void sc_vulkan_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
     sc_vulkan_destroy_buffer(ctx, buf);
     if (size == 0) return;
-    SCGfxBufferDesc desc = {.data = data, .size = size};
-    /* Re-create via make; need to re-alloc slot — re-use slot id */
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     VkResult r = _sc_vk_create_buf(s->device, s->phy_dev, size, usage,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         &s->buf_buffers[buf.id], &s->buf_mems[buf.id]);
     if (r != VK_SUCCESS) return;
     s->buf_sizes[buf.id] = size;
-
-    VkBuffer stage_buf;
-    VkDeviceMemory stage_mem;
-    r = _sc_vk_create_buf(s->device, s->phy_dev, size,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        &stage_buf, &stage_mem);
-    if (r != VK_SUCCESS) return;
-
-    void *map;
-    vkMapMemory(s->device, stage_mem, 0, size, 0, &map);
-    memcpy(map, data, size);
-    vkUnmapMemory(s->device, stage_mem);
-
-    VkCommandBufferAllocateInfo cai = {0};
-    cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cai.commandPool = s->cmd_pool;
-    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    VkCommandBuffer cb;
-    vkAllocateCommandBuffers(s->device, &cai, &cb);
-
-    VkCommandBufferBeginInfo bi = {0};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cb, &bi);
-    VkBufferCopy region = {0, 0, size};
-    vkCmdCopyBuffer(cb, stage_buf, s->buf_buffers[buf.id], 1, &region);
-    vkEndCommandBuffer(cb);
-
-    VkSubmitInfo si = {0};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cb;
-    vkQueueSubmit(s->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vkDeviceWaitIdle(s->device);
-
-    vkFreeCommandBuffers(s->device, s->cmd_pool, 1, &cb);
-    vkDestroyBuffer(s->device, stage_buf, NULL);
-    vkFreeMemory(s->device, stage_mem, NULL);
+    _sc_vk_staging_upload(s->device, s->phy_dev, s->gfx_queue,
+        s->cmd_pool, s->buf_buffers[buf.id], size, data);
 }
 
 /* -------------------------------------------------------------------------
@@ -1317,6 +1483,7 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
 
     r = _sc_vk_create_pipeline(s->device, vs, fs,
                                s->user_pip_layouts[id], s->render_pass,
+                               s->samples,
                                &s->user_pipelines[id]);
     if (r != VK_SUCCESS) {
         vkDestroyPipelineLayout(s->device, s->user_pip_layouts[id], NULL);
@@ -1352,12 +1519,8 @@ void sc_vulkan_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
 }
 
 void sc_vulkan_submit(SCGfxContext *ctx, const SCGfxDrawCmd *cmds, u32 count) {
-    if (!ctx) return;
-    ctx->frame_stats.draw_calls += count;
-    for (u32 i = 0; i < count; i++) {
-        ctx->frame_stats.vertex_count += cmds[i].vertex_count;
-        ctx->frame_stats.index_count  += cmds[i].index_count;
-    }
+    SC_UNUSED(ctx); SC_UNUSED(cmds); SC_UNUSED(count);
+    /* Stats are counted in the common sc_gfx_submit path */
 }
 
 void sc_vulkan_end_frame(SCGfxContext *ctx) {
@@ -1614,13 +1777,18 @@ SCResult sc_vulkan_resize(SCGfxContext *ctx, u32 width, u32 height) {
         if (s->os_view)  vkDestroyImageView(s->device, s->os_view, NULL);
         if (s->os_image) vkDestroyImage(s->device, s->os_image, NULL);
         if (s->os_mem)   vkFreeMemory(s->device, s->os_mem, NULL);
+        if (s->os_resolve_view)  vkDestroyImageView(s->device, s->os_resolve_view, NULL);
+        if (s->os_resolve_image) vkDestroyImage(s->device, s->os_resolve_image, NULL);
+        if (s->os_resolve_mem)   vkFreeMemory(s->device, s->os_resolve_mem, NULL);
         s->os_fbo = s->os_view = VK_NULL_HANDLE;
-        s->os_image = VK_NULL_HANDLE;
-        s->os_mem   = VK_NULL_HANDLE;
+        s->os_image = s->os_resolve_image = VK_NULL_HANDLE;
+        s->os_mem = s->os_resolve_mem = VK_NULL_HANDLE;
+        s->os_resolve_view = VK_NULL_HANDLE;
 
         VkResult r = _sc_vk_create_offscreen(s->device, s->phy_dev, s->gfx_queue,
-            s->width, s->height, s->swap_fmt, s->render_pass,
-            &s->os_image, &s->os_mem, &s->os_view, &s->os_fbo);
+            s->width, s->height, s->swap_fmt, s->render_pass, s->samples,
+            &s->os_image, &s->os_mem, &s->os_view, &s->os_fbo,
+            &s->os_resolve_image, &s->os_resolve_mem, &s->os_resolve_view);
         return (r == VK_SUCCESS) ? SC_OK : SC_ERR_GFX;
     }
 

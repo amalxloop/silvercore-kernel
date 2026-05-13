@@ -331,6 +331,7 @@ typedef struct {
 struct SCGfxContext {
     SCGfxBackend   backend;
     u32            width, height;
+    u32            sample_count;
     bool           vsync;
     SCArena       *frame_arena;
 
@@ -416,6 +417,7 @@ SCResult sc_gfx_init(const SCGfxDesc *desc, SCGfxContext **out_ctx) {
     if (!ctx) return SC_ERR_OOM;
     ctx->width        = desc->width  ? desc->width  : 1280;
     ctx->height       = desc->height ? desc->height : 720;
+    ctx->sample_count = desc->sample_count < 2 ? 1 : desc->sample_count;
     ctx->vsync        = desc->vsync;
     ctx->frame_arena  = desc->frame_arena;
     ctx->backend      = desc->backend != SC_BACKEND_AUTO
