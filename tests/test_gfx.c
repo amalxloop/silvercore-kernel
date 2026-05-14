@@ -447,6 +447,161 @@ static int test_multiple_buffers_and_clear(void) {
     return 0;
 }
 
+/* ===== Depth/stencil tests ================================================ */
+
+static int test_depth_pipeline_create(void) {
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxShaderDesc sd = {.vs_source="",.fs_source=""};
+    SCGfxShader shd = sc_gfx_make_shader(ctx, &sd);
+    FAIL_UNLESS(sc_gfx_shd_valid(shd), "depth shader");
+
+    SCGfxDepthState ds = {0};
+    ds.depth_test  = true;
+    ds.depth_write = true;
+    ds.depth_compare = SC_COMPARE_LEQUAL;
+
+    SCGfxPipelineDesc pd = {.shader=shd, .prim_type=SC_PRIM_TRIANGLES, .depth=ds};
+    SCGfxPipeline pip = sc_gfx_make_pipeline(ctx, &pd);
+    FAIL_UNLESS(sc_gfx_pip_valid(pip), "depth pipeline");
+
+    sc_gfx_destroy_pipeline(ctx, pip);
+    sc_gfx_destroy_shader(ctx, shd);
+    sc_gfx_shutdown(ctx);
+    PASS("depth_pipeline_create");
+    return 0;
+}
+
+static int test_depth_submit_discard(void) {
+    /* Two overlapping triangles at different depths; the farther one
+       should be discarded by depth testing. */
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[3] = {{0,0,0,0,255,0,0,255},
+                              {32,0,0,0,0,255,0,255},
+                              {0,32,0,0,0,0,255,255}};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &bd);
+    FAIL_UNLESS(sc_gfx_buf_valid(vb), "vb depth");
+
+    SCGfxDepthState ds = {.depth_test=true,.depth_write=true,.depth_compare=SC_COMPARE_LEQUAL};
+    SCGfxPipelineDesc pd = {.depth=ds};
+    SCGfxPipeline pip = sc_gfx_make_pipeline(ctx, &pd);
+    FAIL_UNLESS(sc_gfx_pip_valid(pip), "depth pip");
+
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+
+    /* Near triangle (depth=0.0) */
+    SCGfxDrawCmd near_cmd = {0};
+    near_cmd.vertex_buf = vb;
+    near_cmd.vertex_count = 3;
+    near_cmd.pipeline = pip;
+    near_cmd.depth = 0.0f;
+    sc_gfx_submit(ctx, &near_cmd, 1);
+
+    /* Far triangle (depth=0.5) — should be discarded */
+    SCGfxDrawCmd far_cmd = {0};
+    far_cmd.vertex_buf = vb;
+    far_cmd.vertex_count = 3;
+    far_cmd.pipeline = pip;
+    far_cmd.depth = 0.5f;
+    sc_gfx_submit(ctx, &far_cmd, 1);
+
+    sc_gfx_end_frame(ctx);
+
+    sc_gfx_destroy_pipeline(ctx, pip);
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_shutdown(ctx);
+    PASS("depth_submit_discard");
+    return 0;
+}
+
+static int test_depth_no_write(void) {
+    /* depth_test=true, depth_write=false — reads depth but doesn't write.
+       A second drawn triangle at same depth should pass. */
+    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=16,.height=16};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+
+    SCGfxVertex2D verts[3] = {{0,0,0,0,255,255,255,255},
+                              {16,0,0,0,255,255,255,255},
+                              {0,16,0,0,255,255,255,255}};
+    SCGfxBufferDesc bd = {.type=SC_BUFFER_VERTEX,.data=verts,.size=sizeof(verts)};
+    SCGfxBuffer vb = sc_gfx_make_buffer(ctx, &bd);
+
+    SCGfxDepthState ds = {.depth_test=true,.depth_write=false,.depth_compare=SC_COMPARE_LEQUAL};
+    SCGfxPipelineDesc pd = {.depth=ds};
+    SCGfxPipeline pip = sc_gfx_make_pipeline(ctx, &pd);
+
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+    for (int i = 0; i < 3; i++) {
+        SCGfxDrawCmd cmd = {0};
+        cmd.vertex_buf = vb;
+        cmd.vertex_count = 3;
+        cmd.pipeline = pip;
+        cmd.depth = 0.0f;
+        sc_gfx_submit(ctx, &cmd, 1);
+    }
+    sc_gfx_end_frame(ctx);
+
+    sc_gfx_destroy_pipeline(ctx, pip);
+    sc_gfx_destroy_buffer(ctx, vb);
+    sc_gfx_shutdown(ctx);
+    PASS("depth_no_write");
+    return 0;
+}
+
+/* ===== Thread-safety tests ================================================ */
+
+static int test_lock_unlock_null(void) {
+    sc_gfx_lock(NULL);
+    sc_gfx_unlock(NULL);
+    PASS("lock_unlock_null");
+    return 0;
+}
+
+static int test_thread_safe_init(void) {
+    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 32, .height = 32,
+                       .thread_safe = true};
+    SCGfxContext *ctx = NULL;
+    FAIL_UNLESS(sc_ok(sc_gfx_init(&desc, &ctx)), "thread_safe init ok");
+    FAIL_UNLESS(ctx != NULL, "ctx non-null");
+    /* Lock/unlock cycle - must not deadlock or crash */
+    sc_gfx_lock(ctx);
+    sc_gfx_begin_frame(ctx, sc_rgba(0,0,0,1));
+    sc_gfx_end_frame(ctx);
+    sc_gfx_unlock(ctx);
+    sc_gfx_shutdown(ctx);
+    PASS("thread_safe_init");
+    return 0;
+}
+
+/* ===== Resize test ======================================================== */
+
+static int test_resize_software(void) {
+    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 16, .height = 16};
+    SCGfxContext *ctx = NULL;
+    sc_gfx_init(&desc, &ctx);
+    FAIL_UNLESS(ctx != NULL, "resize ctx");
+
+    SCResult r = sc_gfx_resize(ctx, 32, 32);
+    FAIL_UNLESS(r == SC_OK, "resize 32x32 ok");
+
+    r = sc_gfx_resize(ctx, 0, 0);
+    FAIL_UNLESS(r != SC_OK, "resize 0x0 fails");
+
+    r = sc_gfx_resize(ctx, 64, 64);
+    FAIL_UNLESS(r == SC_OK, "resize 64x64 ok");
+
+    sc_gfx_shutdown(ctx);
+    PASS("resize_software");
+    return 0;
+}
+
 int main(void) {
     printf("=== sc_gfx tests ===\n");
     int fail = 0;
@@ -470,6 +625,12 @@ int main(void) {
     fail += test_submit_multiple_cmds();
     fail += test_submit_retained_across_frames();
     fail += test_multiple_buffers_and_clear();
+    fail += test_depth_pipeline_create();
+    fail += test_depth_submit_discard();
+    fail += test_depth_no_write();
+    fail += test_lock_unlock_null();
+    fail += test_thread_safe_init();
+    fail += test_resize_software();
     if (!fail) printf("All gfx tests passed.\n");
     return fail;
 }

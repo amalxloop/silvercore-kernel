@@ -252,6 +252,14 @@ class SilverCore:
             c_float, c_float, c_float, c_float,   # rect xywh
             c_float, c_float, c_float, c_float]   # color rgba
 
+        lib.sc_gfx_resize.restype  = c_int
+        lib.sc_gfx_resize.argtypes = [c_void_p, c_uint, c_uint]
+
+        lib.sc_gfx_lock.restype   = None
+        lib.sc_gfx_lock.argtypes  = [c_void_p]
+        lib.sc_gfx_unlock.restype = None
+        lib.sc_gfx_unlock.argtypes = [c_void_p]
+
         lib.sc_scene_update.restype  = None
         lib.sc_scene_update.argtypes = [c_void_p, c_float]
 
@@ -288,6 +296,19 @@ class SilverCore:
     def gfx_shutdown(self, ctx):
         if not self._sim:
             self._lib.sc_gfx_shutdown(ctx)
+
+    def gfx_resize(self, ctx, width: int, height: int) -> int:
+        if self._sim:
+            return 0
+        return self._lib.sc_gfx_resize(ctx, width, height)
+
+    def gfx_lock(self, ctx):
+        if not self._sim:
+            self._lib.sc_gfx_lock(ctx)
+
+    def gfx_unlock(self, ctx):
+        if not self._sim:
+            self._lib.sc_gfx_unlock(ctx)
 
 # ---------------------------------------------------------------------------
 # High-level Scene (pure-Python retained mode for scripting)

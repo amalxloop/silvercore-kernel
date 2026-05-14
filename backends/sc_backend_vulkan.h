@@ -141,6 +141,10 @@ typedef struct {
     /* User pipelines */
     VkPipeline       user_pipelines[SC_GFX_MAX_PIPELINES];
     VkPipelineLayout user_pip_layouts[SC_GFX_MAX_PIPELINES];
+
+    /* Pipeline cache: deduplicate identical descs */
+#define _SC_VK_PIP_CACHE_SIZE 64
+    struct { u64 hash; VkPipeline pip; VkPipelineLayout layout; } pip_cache[_SC_VK_PIP_CACHE_SIZE];
 } _SCVkState;
 
 /* -------------------------------------------------------------------------
@@ -220,6 +224,7 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
     VkShaderModule vs, VkShaderModule fs,
     VkPipelineLayout layout, VkRenderPass rp,
     VkSampleCountFlagBits samples,
+    const SCGfxDepthState *depth,
     VkPipeline *out) {
 
     VkPipelineShaderStageCreateInfo stages[2] = {{0},{0}};
@@ -297,15 +302,39 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
     cbs.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     cbs.attachmentCount = 1; cbs.pAttachments = &bl;
 
+    VkPipelineDepthStencilStateCreateInfo ds = {0};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    if (depth) {
+        ds.depthTestEnabled  = depth->depth_test ? VK_TRUE : VK_FALSE;
+        ds.depthWriteEnabled = depth->depth_write ? VK_TRUE : VK_FALSE;
+        ds.depthCompareOp    = (VkCompareOp)depth->depth_compare;
+        ds.stencilTestEnabled = depth->stencil_test ? VK_TRUE : VK_FALSE;
+        ds.front.failOp      = (VkStencilOp)depth->stencil_front.fail_op;
+        ds.front.passOp      = (VkStencilOp)depth->stencil_front.pass_op;
+        ds.front.depthFailOp = (VkStencilOp)depth->stencil_front.depth_fail_op;
+        ds.front.compareOp   = (VkCompareOp)depth->stencil_front.compare;
+        ds.front.compareMask = depth->stencil_front.read_mask;
+        ds.front.writeMask   = depth->stencil_front.write_mask;
+        ds.front.reference   = depth->stencil_front.reference;
+        ds.back.failOp       = (VkStencilOp)depth->stencil_back.fail_op;
+        ds.back.passOp       = (VkStencilOp)depth->stencil_back.pass_op;
+        ds.back.depthFailOp  = (VkStencilOp)depth->stencil_back.depth_fail_op;
+        ds.back.compareOp    = (VkCompareOp)depth->stencil_back.compare;
+        ds.back.compareMask  = depth->stencil_back.read_mask;
+        ds.back.writeMask    = depth->stencil_back.write_mask;
+        ds.back.reference    = depth->stencil_back.reference;
+    }
+
     VkGraphicsPipelineCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     ci.stageCount = 2; ci.pStages = stages;
-    ci.pVertexInputState   = &vi;
-    ci.pInputAssemblyState = &ia;
-    ci.pViewportState      = &vsi;
-    ci.pRasterizationState = &rs;
-    ci.pMultisampleState   = &ms;
-    ci.pColorBlendState    = &cbs;
+    ci.pVertexInputState    = &vi;
+    ci.pInputAssemblyState  = &ia;
+    ci.pViewportState       = &vsi;
+    ci.pRasterizationState  = &rs;
+    ci.pMultisampleState    = &ms;
+    ci.pDepthStencilState   = &ds;
+    ci.pColorBlendState     = &cbs;
     ci.layout      = layout;
     ci.renderPass  = rp;
     ci.pDynamicState = &dynamic_state;
@@ -1133,9 +1162,12 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     _sc_vk_make_shader(s->device, _sc_vk_vert_spv, _sc_vk_vert_spv_len, &vs);
     _sc_vk_make_shader(s->device, _sc_vk_frag_spv, _sc_vk_frag_spv_len, &fs);
 
-    /* ---- Graphics pipeline -------------------------------------------- */
-    r = _sc_vk_create_pipeline(s->device, vs, fs, s->pipeline_layout,
-                                s->render_pass, s->samples, &s->pipeline);
+    /* ---- Graphics pipeline (default depth: no test, no write) --------- */
+    {
+        SCGfxDepthState depth_def = {0};
+        r = _sc_vk_create_pipeline(s->device, vs, fs, s->pipeline_layout,
+                                    s->render_pass, s->samples, &depth_def, &s->pipeline);
+    }
     vkDestroyShaderModule(s->device, fs, NULL);
     vkDestroyShaderModule(s->device, vs, NULL);
     if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
@@ -1241,10 +1273,19 @@ void sc_vulkan_shutdown(SCGfxContext *ctx) {
         if (s->shd_fs_modules[i]) vkDestroyShaderModule(s->device, s->shd_fs_modules[i], NULL);
     }
 
-    /* Destroy user pipelines */
+    /* Destroy user pipelines (non-cached only; cache owns its own) */
     for (u32 i = 0; i < SC_GFX_MAX_PIPELINES; i++) {
-        if (s->user_pipelines[i])   vkDestroyPipeline(s->device, s->user_pipelines[i], NULL);
-        if (s->user_pip_layouts[i]) vkDestroyPipelineLayout(s->device, s->user_pip_layouts[i], NULL);
+        bool cached = s->user_pipelines[i] && _sc_vk_pip_is_cached(s, s->user_pipelines[i]);
+        if (!cached) {
+            if (s->user_pipelines[i])  vkDestroyPipeline(s->device, s->user_pipelines[i], NULL);
+            if (s->user_pip_layouts[i]) vkDestroyPipelineLayout(s->device, s->user_pip_layouts[i], NULL);
+        }
+    }
+
+    /* Destroy cached pipelines */
+    for (u32 i = 0; i < _SC_VK_PIP_CACHE_SIZE; i++) {
+        if (s->pip_cache[i].pip)    vkDestroyPipeline(s->device, s->pip_cache[i].pip, NULL);
+        if (s->pip_cache[i].layout) vkDestroyPipelineLayout(s->device, s->pip_cache[i].layout, NULL);
     }
 
     /* Destroy textures */
@@ -1449,12 +1490,59 @@ void sc_vulkan_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
 }
 
 /* -------------------------------------------------------------------------
- * User pipeline management (best-effort creation)
+ * Pipeline cache: FNV-1a hash of the relevant desc fields
+ * ---------------------------------------------------------------------- */
+static u64 _sc_vk_hash_pip_desc(const SCGfxPipelineDesc *desc) {
+    u64 h = 0xcbf29ce484222325ull;
+    u64 prime = 0x100000001b3ull;
+    u32 buf[16] = {0};
+    buf[0]  = desc->shader.id;
+    buf[1]  = (u32)desc->prim_type;
+    buf[2]  = desc->blend.enabled ? 1u : 0u;
+    buf[3]  = (u32)desc->blend.src_factor;
+    buf[4]  = (u32)desc->blend.dst_factor;
+    buf[5]  = desc->depth.depth_test ? 1u : 0u;
+    buf[6]  = desc->depth.depth_write ? 1u : 0u;
+    buf[7]  = (u32)desc->depth.depth_compare;
+    buf[8]  = desc->depth.stencil_test ? 1u : 0u;
+    buf[9]  = (u32)desc->depth.stencil_front.fail_op;
+    buf[10] = (u32)desc->depth.stencil_front.pass_op;
+    buf[11] = (u32)desc->depth.stencil_front.depth_fail_op;
+    buf[12] = (u32)desc->depth.stencil_front.compare;
+    buf[13] = (u32)desc->depth.stencil_back.fail_op;
+    buf[14] = (u32)desc->depth.stencil_back.pass_op;
+    buf[15] = (u32)desc->depth.stencil_back.compare;
+    for (int i = 0; i < 16; i++) { h ^= (u64)buf[i]; h *= prime; }
+    return h;
+}
+
+/* Return true if the pipeline is held by the cache */
+static bool _sc_vk_pip_is_cached(_SCVkState *s, VkPipeline pip) {
+    for (u32 i = 0; i < _SC_VK_PIP_CACHE_SIZE; i++)
+        if (s->pip_cache[i].hash && s->pip_cache[i].pip == pip) return true;
+    return false;
+}
+
+/* -------------------------------------------------------------------------
+ * User pipeline management (best-effort creation, cached)
  * ---------------------------------------------------------------------- */
 SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
     SCGfxPipeline h = {0};
     if (!ctx || !ctx->backend_data || !desc) return h;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
+
+    /* Hash the desc and check cache */
+    u64 hash = _sc_vk_hash_pip_desc(desc);
+    for (u32 ci = 0; ci < _SC_VK_PIP_CACHE_SIZE; ci++) {
+        if (s->pip_cache[ci].hash == hash) {
+            u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
+            if (id == 0) return h;
+            h.id = id;
+            s->user_pipelines[id]  = s->pip_cache[ci].pip;
+            s->user_pip_layouts[id] = s->pip_cache[ci].layout;
+            return h;
+        }
+    }
 
     u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
     if (id == 0) return h;
@@ -1477,13 +1565,12 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
                         ? s->shd_modules[shd_id] : s->shd_modules[0];
     VkShaderModule fs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_fs_modules[shd_id])
                         ? s->shd_fs_modules[shd_id] : s->shd_fs_modules[0];
-    /* If no user shaders, fallback to the built-in embedded SPIR-V */
     if (!vs) { _sc_vk_make_shader(s->device, vk_vert_spv, vk_vert_spv_len, &vs); }
     if (!fs) { _sc_vk_make_shader(s->device, vk_frag_spv, vk_frag_spv_len, &fs); }
 
     r = _sc_vk_create_pipeline(s->device, vs, fs,
                                s->user_pip_layouts[id], s->render_pass,
-                               s->samples,
+                               s->samples, &desc->depth,
                                &s->user_pipelines[id]);
     if (r != VK_SUCCESS) {
         vkDestroyPipelineLayout(s->device, s->user_pip_layouts[id], NULL);
@@ -1493,12 +1580,19 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
         return h;
     }
 
-    /* Clean up temporary modules created from fallback */
-    if (vs != s->shd_modules[0] && vs != VK_NULL_HANDLE) {
+    if (vs != s->shd_modules[0] && vs != VK_NULL_HANDLE)
         vkDestroyShaderModule(s->device, vs, NULL);
-    }
-    if (fs != s->shd_fs_modules[0] && fs != VK_NULL_HANDLE) {
+    if (fs != s->shd_fs_modules[0] && fs != VK_NULL_HANDLE)
         vkDestroyShaderModule(s->device, fs, NULL);
+
+    /* Store in cache (linear scan for empty slot) */
+    for (u32 ci = 0; ci < _SC_VK_PIP_CACHE_SIZE; ci++) {
+        if (s->pip_cache[ci].hash == 0) {
+            s->pip_cache[ci].hash   = hash;
+            s->pip_cache[ci].pip    = s->user_pipelines[id];
+            s->pip_cache[ci].layout = s->user_pip_layouts[id];
+            break;
+        }
     }
 
     return h;
@@ -1508,14 +1602,13 @@ void sc_vulkan_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
     if (!ctx || !ctx->backend_data || pip.id == 0) return;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
     if (pip.id >= SC_GFX_MAX_PIPELINES) return;
-    if (s->user_pipelines[pip.id]) {
-        vkDestroyPipeline(s->device, s->user_pipelines[pip.id], NULL);
-        s->user_pipelines[pip.id] = VK_NULL_HANDLE;
+    bool cached = s->user_pipelines[pip.id] && _sc_vk_pip_is_cached(s, s->user_pipelines[pip.id]);
+    if (!cached) {
+        if (s->user_pipelines[pip.id])  vkDestroyPipeline(s->device, s->user_pipelines[pip.id], NULL);
+        if (s->user_pip_layouts[pip.id]) vkDestroyPipelineLayout(s->device, s->user_pip_layouts[pip.id], NULL);
     }
-    if (s->user_pip_layouts[pip.id]) {
-        vkDestroyPipelineLayout(s->device, s->user_pip_layouts[pip.id], NULL);
-        s->user_pip_layouts[pip.id] = VK_NULL_HANDLE;
-    }
+    s->user_pipelines[pip.id]  = VK_NULL_HANDLE;
+    s->user_pip_layouts[pip.id] = VK_NULL_HANDLE;
 }
 
 void sc_vulkan_submit(SCGfxContext *ctx, const SCGfxDrawCmd *cmds, u32 count) {

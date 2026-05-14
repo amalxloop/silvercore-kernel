@@ -28,3 +28,11 @@
 #define SC_BACKEND_VULKAN_IMPLEMENTATION
 #include "sc_backend_vulkan.h"
 #endif
+#ifdef SC_GFX_BACKEND_D3D12
+#define SC_BACKEND_D3D12_IMPLEMENTATION
+#include "sc_backend_d3d12.h"
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+#define SC_BACKEND_WGPU_IMPLEMENTATION
+#include "sc_backend_wgpu.h"
+#endif

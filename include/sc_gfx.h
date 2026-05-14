@@ -90,7 +90,7 @@ typedef enum SCBufferType {
 } SCBufferType;
 
 /* -------------------------------------------------------------------------
- * Blend / pipeline state
+ * Blend / depth / pipeline state
  * ---------------------------------------------------------------------- */
 typedef enum SCBlendFactor {
     SC_BLEND_ZERO               = 0,
@@ -99,6 +99,47 @@ typedef enum SCBlendFactor {
     SC_BLEND_ONE_MINUS_SRC_ALPHA= 3,
     SC_BLEND_DST_ALPHA          = 4,
 } SCBlendFactor;
+
+typedef enum SCCompareFunc {
+    SC_COMPARE_NEVER    = 0,
+    SC_COMPARE_LESS     = 1,
+    SC_COMPARE_EQUAL    = 2,
+    SC_COMPARE_LEQUAL   = 3,
+    SC_COMPARE_GREATER  = 4,
+    SC_COMPARE_NOTEQUAL = 5,
+    SC_COMPARE_GEQUAL   = 6,
+    SC_COMPARE_ALWAYS   = 7,
+} SCCompareFunc;
+
+typedef enum SCStencilOp {
+    SC_STENCIL_KEEP       = 0,
+    SC_STENCIL_ZERO       = 1,
+    SC_STENCIL_REPLACE    = 2,
+    SC_STENCIL_INCR_CLAMP = 3,
+    SC_STENCIL_DECR_CLAMP = 4,
+    SC_STENCIL_INVERT     = 5,
+    SC_STENCIL_INCR_WRAP  = 6,
+    SC_STENCIL_DECR_WRAP  = 7,
+} SCStencilOp;
+
+typedef struct SCGfxStencilState {
+    SCStencilOp   fail_op;
+    SCStencilOp   pass_op;
+    SCStencilOp   depth_fail_op;
+    SCCompareFunc compare;
+    u32           read_mask;
+    u32           write_mask;
+    u32           reference;
+} SCGfxStencilState;
+
+typedef struct SCGfxDepthState {
+    bool              depth_test;
+    bool              depth_write;
+    SCCompareFunc     depth_compare;
+    bool              stencil_test;
+    SCGfxStencilState stencil_front;
+    SCGfxStencilState stencil_back;
+} SCGfxDepthState;
 
 typedef enum SCPrimType {
     SC_PRIM_TRIANGLES     = 0,
@@ -148,8 +189,7 @@ typedef struct SCGfxPipelineDesc {
     SCGfxShader    shader;
     SCPrimType     prim_type;
     SCGfxBlendState blend;
-    bool            depth_write;
-    bool            depth_test;
+    SCGfxDepthState depth;
     const char     *label;
 } SCGfxPipelineDesc;
 
@@ -176,6 +216,7 @@ typedef struct SCGfxDrawCmd {
     u32           vertex_count;
     u32           base_index;
     u32           index_count;
+    f32           depth;        /* uniform depth for all vertices (0 = near, 1 = far) */
     SCRect2i      scissor;    /* {0,0,0,0} = no clip */
     /* Uniform block (up to 256 bytes) */
     u8            uniforms[256];
@@ -214,6 +255,7 @@ typedef struct SCGfxDesc {
     void        *native_window;  /* HWND / NSWindow* / xcb_window_t  */
     void        *native_display; /* HDC / Display* / NULL            */
     SCArena     *frame_arena;    /* scratch memory for frame allocs  */
+    bool         thread_safe;    /* enable internal mutex (default: false) */
 } SCGfxDesc;
 
 /* -------------------------------------------------------------------------
@@ -225,43 +267,88 @@ typedef struct SCGfxContext SCGfxContext;
  * API
  * ---------------------------------------------------------------------- */
 
+/** @brief  Initialise the graphics system and select a backend.
+ *  @param desc   Initialisation parameters (backend, resolution, vsync, …).
+ *  @param out_ctx  Receives the opaque context pointer.
+ *  @return SC_OK on success, or an error code (e.g. SC_ERR_OOM, SC_ERR_GFX). */
 SCResult       sc_gfx_init        (const SCGfxDesc *desc, SCGfxContext **out_ctx);
+
+/** @brief  Shut down the graphics system and free all resources.
+ *  Safe to call with NULL ctx. */
 void           sc_gfx_shutdown    (SCGfxContext *ctx);
 
+/** @brief  Create a GPU buffer (vertex, index, or uniform).
+ *  @return A valid handle, or {0} on failure (check with sc_gfx_buf_valid). */
 SCGfxBuffer    sc_gfx_make_buffer  (SCGfxContext *ctx, const SCGfxBufferDesc *desc);
+
+/** @brief  Update (overwrite) the contents of an existing buffer. */
 void           sc_gfx_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf, const void *data, usize size);
+
+/** @brief  Destroy a buffer and free its GPU memory. */
 void           sc_gfx_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf);
 
+/** @brief  Create a 2-D texture from CPU data (or allocate uninitialised).
+ *  @return A valid handle, or {0} on failure (check with sc_gfx_tex_valid). */
 SCGfxTexture   sc_gfx_make_texture (SCGfxContext *ctx, const SCGfxTextureDesc *desc);
+
+/** @brief  Update a sub-rectangle of an existing texture (software backend only). */
 void           sc_gfx_update_texture(SCGfxContext *ctx, SCGfxTexture tex,
                                      u32 x, u32 y, u32 w, u32 h,
                                      const void *data, usize size);
+
+/** @brief  Destroy a texture and free its GPU memory. */
 void           sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
 
+/** @brief  Compile a vertex+fragment shader pair.
+ *  @return A valid handle, or {0} on failure (check with sc_gfx_shd_valid). */
 SCGfxShader    sc_gfx_make_shader  (SCGfxContext *ctx, const SCGfxShaderDesc *desc);
+
+/** @brief  Destroy a shader and release its GPU resources. */
 void           sc_gfx_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
 
+/** @brief  Create a pipeline (shader + blend + depth + primitive type).
+ *  @return A valid handle, or {0} on failure (check with sc_gfx_pip_valid). */
 SCGfxPipeline  sc_gfx_make_pipeline (SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
+
+/** @brief  Destroy a pipeline state object. */
 void           sc_gfx_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
 
-/* Frame lifecycle */
+/** @brief  Begin a new frame: clear the target and reset internal state. */
 void           sc_gfx_begin_frame  (SCGfxContext *ctx, SCColor clear_color);
+
+/** @brief  Submit a batch of retained draw commands for the current frame. */
 void           sc_gfx_submit       (SCGfxContext *ctx, const SCGfxDrawCmd *cmds, u32 count);
+
+/** @brief  End the current frame: execute all retained commands and present. */
 void           sc_gfx_end_frame    (SCGfxContext *ctx);
 
-/* Query */
+/** @brief  Return the backend currently in use. */
 SCGfxBackend   sc_gfx_active_backend(const SCGfxContext *ctx);
+
+/** @brief  Return statistics for the last completed frame. */
 SCGfxFrameStats sc_gfx_frame_stats  (const SCGfxContext *ctx);
 
-/* Enable or disable software framebuffer rasterization (default: on) */
+/** @brief  Enable or disable software framebuffer rasterisation (default: on). */
 void           sc_gfx_set_rasterize(SCGfxContext *ctx, bool enable);
 
-/* Resize the framebuffer / swapchain (handle window resize) */
+/** @brief  Handle a window resize: recreate swapchain / framebuffer.
+ *  @return SC_OK on success. */
 SCResult       sc_gfx_resize(SCGfxContext *ctx, u32 width, u32 height);
 
-/* Built-in 2-D helpers (sprite / rect / text batch) */
+/** @brief  Lock the internal mutex (only needed when thread_safe was set in
+ *          SCGfxDesc).  Nested locks from the same thread are undefined. */
+void           sc_gfx_lock  (SCGfxContext *ctx);
+
+/** @brief  Unlock the internal mutex. */
+void           sc_gfx_unlock(SCGfxContext *ctx);
+
+/** @brief  Draw a filled rectangle (immediate-mode 2-D helper). */
 void sc_gfx_draw_rect  (SCGfxContext *ctx, SCRect2f rect, SCColor color);
+
+/** @brief  Draw a textured sprite (immediate-mode 2-D helper). */
 void sc_gfx_draw_sprite(SCGfxContext *ctx, SCRect2f dest, SCGfxTexture tex, SCColor tint);
+
+/** @brief  Draw a line segment with a given width (immediate-mode 2-D helper). */
 void sc_gfx_draw_line  (SCGfxContext *ctx, SCVec2 a, SCVec2 b, f32 width, SCColor color);
 
 /* ---- Slot / texture / batch types (used by both impl and declaration) --- */
@@ -306,6 +393,69 @@ void         sc_vulkan_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
 SCGfxPipeline sc_vulkan_make_pipeline (SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
 void          sc_vulkan_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+struct SCMetalDesc;
+SCResult sc_metal_init         (SCGfxContext *ctx, const SCGfxDesc *desc,
+                                 const struct SCMetalDesc *mtl_desc);
+void     sc_metal_shutdown     (SCGfxContext *ctx);
+void     sc_metal_begin_frame  (SCGfxContext *ctx, SCColor clear);
+void     sc_metal_submit       (SCGfxContext *ctx,
+                                 const SCGfxDrawCmd *cmds, u32 count);
+void     sc_metal_end_frame    (SCGfxContext *ctx);
+SCGfxBuffer  sc_metal_make_buffer   (SCGfxContext *ctx, const SCGfxBufferDesc *desc);
+void         sc_metal_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf);
+void         sc_metal_update_buffer (SCGfxContext *ctx, SCGfxBuffer buf,
+                                     const void *data, usize size);
+SCGfxTexture sc_metal_make_texture  (SCGfxContext *ctx, const SCGfxTextureDesc *desc);
+void         sc_metal_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
+SCGfxShader  sc_metal_make_shader   (SCGfxContext *ctx, const SCGfxShaderDesc *desc);
+void         sc_metal_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
+SCGfxPipeline sc_metal_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
+void          sc_metal_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
+SCResult      sc_metal_resize          (SCGfxContext *ctx, u32 width, u32 height);
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+struct SCD3D12Desc;
+SCResult sc_d3d12_init         (SCGfxContext *ctx, const SCGfxDesc *desc,
+                                 const struct SCD3D12Desc *d3d_desc);
+void     sc_d3d12_shutdown     (SCGfxContext *ctx);
+void     sc_d3d12_begin_frame  (SCGfxContext *ctx, SCColor clear);
+void     sc_d3d12_submit       (SCGfxContext *ctx,
+                                 const SCGfxDrawCmd *cmds, u32 count);
+void     sc_d3d12_end_frame    (SCGfxContext *ctx);
+SCGfxBuffer  sc_d3d12_make_buffer   (SCGfxContext *ctx, const SCGfxBufferDesc *desc);
+void         sc_d3d12_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf);
+void         sc_d3d12_update_buffer (SCGfxContext *ctx, SCGfxBuffer buf,
+                                      const void *data, usize size);
+SCGfxTexture sc_d3d12_make_texture  (SCGfxContext *ctx, const SCGfxTextureDesc *desc);
+void         sc_d3d12_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
+SCGfxShader  sc_d3d12_make_shader   (SCGfxContext *ctx, const SCGfxShaderDesc *desc);
+void         sc_d3d12_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
+SCGfxPipeline sc_d3d12_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
+void          sc_d3d12_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
+SCResult      sc_d3d12_resize        (SCGfxContext *ctx, u32 width, u32 height);
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+struct SCWGPUDesc;
+SCResult sc_wgpu_init          (SCGfxContext *ctx, const SCGfxDesc *desc,
+                                 const struct SCWGPUDesc *wgpu_desc);
+void     sc_wgpu_shutdown      (SCGfxContext *ctx);
+void     sc_wgpu_begin_frame   (SCGfxContext *ctx, SCColor clear);
+void     sc_wgpu_submit        (SCGfxContext *ctx,
+                                 const SCGfxDrawCmd *cmds, u32 count);
+void     sc_wgpu_end_frame     (SCGfxContext *ctx);
+SCGfxBuffer  sc_wgpu_make_buffer   (SCGfxContext *ctx, const SCGfxBufferDesc *desc);
+void         sc_wgpu_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf);
+void         sc_wgpu_update_buffer (SCGfxContext *ctx, SCGfxBuffer buf,
+                                     const void *data, usize size);
+SCGfxTexture sc_wgpu_make_texture  (SCGfxContext *ctx, const SCGfxTextureDesc *desc);
+void         sc_wgpu_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex);
+SCGfxShader  sc_wgpu_make_shader   (SCGfxContext *ctx, const SCGfxShaderDesc *desc);
+void         sc_wgpu_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
+SCGfxPipeline sc_wgpu_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
+void          sc_wgpu_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
+SCResult      sc_wgpu_resize         (SCGfxContext *ctx, u32 width, u32 height);
+#endif
 
 /* ---- Software backend: buffer data store -------------------------------- */
 typedef struct {
@@ -324,6 +474,28 @@ typedef struct {
 #include <stdio.h>
 #include <math.h>
 
+/* ---- Platform mutex abstraction (used when thread_safe is true) ------- */
+#if defined(SC_PLATFORM_LINUX) || defined(SC_PLATFORM_MACOS)
+#include <pthread.h>
+#define _SC_MTX_T          pthread_mutex_t
+#define _SC_MTX_INIT(m)    pthread_mutex_init(m, NULL)
+#define _SC_MTX_LOCK(m)    pthread_mutex_lock(m)
+#define _SC_MTX_UNLOCK(m)  pthread_mutex_unlock(m)
+#define _SC_MTX_DESTROY(m) pthread_mutex_destroy(m)
+#elif defined(SC_PLATFORM_WINDOWS)
+#define _SC_MTX_T          CRITICAL_SECTION
+#define _SC_MTX_INIT(m)    InitializeCriticalSection(m)
+#define _SC_MTX_LOCK(m)    EnterCriticalSection(m)
+#define _SC_MTX_UNLOCK(m)  LeaveCriticalSection(m)
+#define _SC_MTX_DESTROY(m) DeleteCriticalSection(m)
+#else
+#define _SC_MTX_T          int
+#define _SC_MTX_INIT(m)    (*(m) = 0)
+#define _SC_MTX_LOCK(m)    ((void)0)
+#define _SC_MTX_UNLOCK(m)  ((void)0)
+#define _SC_MTX_DESTROY(m) ((void)0)
+#endif
+
 /* ---- Internal context ------------------------------------------------- */
 #define _SC_MAX_2D_VERTS  65536
 #define _SC_MAX_2D_CMDS   8192
@@ -341,6 +513,9 @@ struct SCGfxContext {
     _SCSlot        shd_slots  [SC_GFX_MAX_SHADERS];
     _SCSlot        pip_slots  [SC_GFX_MAX_PIPELINES];
 
+    /* Thread-safety: non-NULL when thread_safe mode is active */
+    void          *lock_mutex;
+
     /* Backend-specific data (e.g. _SCVkState for Vulkan) */
     void          *backend_data;
 
@@ -353,8 +528,9 @@ struct SCGfxContext {
     /* Software backend: pipeline desc storage */
     SCGfxPipelineDesc pip_desc[SC_GFX_MAX_PIPELINES];
 
-    /* Software rasteriser: framebuffer */
+    /* Software rasteriser: framebuffer + depth buffer */
     u8            *framebuffer;  /* RGBA8, width*height*4 bytes */
+    f32           *depth_buffer; /* f32 depth, width*height entries, 1.0 = far */
     _SCTexData     tex_data[SC_GFX_MAX_TEXTURES];
     bool           rasterize;    /* if true, software rasterizes quads into framebuffer */
 
@@ -423,6 +599,15 @@ SCResult sc_gfx_init(const SCGfxDesc *desc, SCGfxContext **out_ctx) {
     ctx->backend      = desc->backend != SC_BACKEND_AUTO
                         ? desc->backend : SC_BACKEND_SOFTWARE;
 
+    /* Initialize optional thread-safety mutex */
+    ctx->lock_mutex = NULL;
+    if (desc->thread_safe) {
+        ctx->lock_mutex = malloc(sizeof(_SC_MTX_T));
+        if (ctx->lock_mutex) {
+            _SC_MTX_INIT((_SC_MTX_T*)ctx->lock_mutex);
+        }
+    }
+
     /* Initialize free-list slot allocators */
     _sc_gfx_init_freelist(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
     _sc_gfx_init_freelist(ctx->tex_slots, SC_GFX_MAX_TEXTURES, &ctx->tex_free_head);
@@ -438,15 +623,46 @@ SCResult sc_gfx_init(const SCGfxDesc *desc, SCGfxContext **out_ctx) {
         return SC_OK;
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        SCResult r = sc_metal_init(ctx, desc, NULL);
+        if (r != SC_OK) { free(ctx); return r; }
+        *out_ctx = ctx;
+        fprintf(stderr, "[sc_gfx] metal backend %ux%u\n", ctx->width, ctx->height);
+        return SC_OK;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        SCResult r = sc_d3d12_init(ctx, desc, NULL);
+        if (r != SC_OK) { free(ctx); return r; }
+        *out_ctx = ctx;
+        fprintf(stderr, "[sc_gfx] d3d12 backend %ux%u\n", ctx->width, ctx->height);
+        return SC_OK;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        SCResult r = sc_wgpu_init(ctx, desc, NULL);
+        if (r != SC_OK) { free(ctx); return r; }
+        *out_ctx = ctx;
+        fprintf(stderr, "[sc_gfx] wgpu backend %ux%u\n", ctx->width, ctx->height);
+        return SC_OK;
+    }
+#endif
 
-    /* Software: allocate framebuffer */
+    /* Software: allocate framebuffer + depth buffer */
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
         ctx->rasterize = true;
-        if (ctx->width > 0 && ctx->height > (SIZE_MAX / 4) / ctx->width) {
+        usize fb_size = (usize)ctx->width * ctx->height;
+        if (ctx->width > 0 && fb_size > (SIZE_MAX / 4)) {
             free(ctx); return SC_ERR_INVALID_ARG;
         }
-        ctx->framebuffer = (u8*)calloc((usize)ctx->width * ctx->height * 4, 1);
+        ctx->framebuffer = (u8*)calloc(fb_size * 4, 1);
         if (!ctx->framebuffer) { free(ctx); return SC_ERR_OOM; }
+        ctx->depth_buffer = (f32*)malloc(fb_size * sizeof(f32));
+        if (!ctx->depth_buffer) { free(ctx->framebuffer); free(ctx); return SC_ERR_OOM; }
+        for (usize i = 0; i < fb_size; i++) ctx->depth_buffer[i] = 1.0f;
     }
 
     fprintf(stderr, "[sc_gfx] backend=%d  %ux%u\n",
@@ -464,6 +680,32 @@ void sc_gfx_shutdown(SCGfxContext *ctx) {
         return;
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_shutdown(ctx);
+        free(ctx);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_shutdown(ctx);
+        free(ctx);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_shutdown(ctx);
+        free(ctx);
+        return;
+    }
+#endif
+    if (ctx->lock_mutex) {
+        _SC_MTX_DESTROY((_SC_MTX_T*)ctx->lock_mutex);
+        free(ctx->lock_mutex);
+        ctx->lock_mutex = NULL;
+    }
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
         for (u32 i = 0; i < SC_GFX_MAX_TEXTURES; i++) {
             free(ctx->tex_data[i].pixels);
@@ -472,6 +714,7 @@ void sc_gfx_shutdown(SCGfxContext *ctx) {
             free(ctx->buf_data[i].data);
         }
     }
+    free(ctx->depth_buffer);
     free(ctx->framebuffer);
     free(ctx);
 }
@@ -483,6 +726,21 @@ SCGfxBuffer sc_gfx_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         return sc_vulkan_make_buffer(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        return sc_metal_make_buffer(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        return sc_d3d12_make_buffer(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        return sc_wgpu_make_buffer(ctx, desc);
     }
 #endif
     if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
@@ -511,6 +769,24 @@ void sc_gfx_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
         return;
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_update_buffer(ctx, buf, data, size);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_update_buffer(ctx, buf, data, size);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_update_buffer(ctx, buf, data, size);
+        return;
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
         _SCBufData *bd = &ctx->buf_data[buf.id];
         free(bd->data);
@@ -533,6 +809,24 @@ void sc_gfx_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
         return;
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_destroy_buffer(ctx, buf);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_destroy_buffer(ctx, buf);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_destroy_buffer(ctx, buf);
+        return;
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
         free(ctx->buf_data[buf.id].data);
         ctx->buf_data[buf.id].data = NULL;
@@ -544,6 +838,21 @@ SCGfxTexture sc_gfx_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *desc
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         return sc_vulkan_make_texture(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        return sc_metal_make_texture(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        return sc_d3d12_make_texture(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        return sc_wgpu_make_texture(ctx, desc);
     }
 #endif
     u32 id = _sc_gfx_alloc_slot(ctx->tex_slots, SC_GFX_MAX_TEXTURES, &ctx->tex_free_head);
@@ -600,6 +909,27 @@ void sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
         return;
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_destroy_texture(ctx, tex);
+        _sc_gfx_free_slot(ctx->tex_slots, tex.id, &ctx->tex_free_head);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_destroy_texture(ctx, tex);
+        _sc_gfx_free_slot(ctx->tex_slots, tex.id, &ctx->tex_free_head);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_destroy_texture(ctx, tex);
+        _sc_gfx_free_slot(ctx->tex_slots, tex.id, &ctx->tex_free_head);
+        return;
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
         free(ctx->tex_data[tex.id].pixels);
         ctx->tex_data[tex.id].pixels = NULL;
@@ -616,6 +946,21 @@ SCGfxShader sc_gfx_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
         return sc_vulkan_make_shader(ctx, desc);
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        return sc_metal_make_shader(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        return sc_d3d12_make_shader(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        return sc_wgpu_make_shader(ctx, desc);
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
         ctx->shd_desc[id] = *desc;
     }
@@ -626,6 +971,24 @@ void sc_gfx_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         sc_vulkan_destroy_shader(ctx, shd);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_destroy_shader(ctx, shd);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_destroy_shader(ctx, shd);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_destroy_shader(ctx, shd);
         return;
     }
 #endif
@@ -641,6 +1004,21 @@ SCGfxPipeline sc_gfx_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *d
         return sc_vulkan_make_pipeline(ctx, desc);
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        return sc_metal_make_pipeline(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        return sc_d3d12_make_pipeline(ctx, desc);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        return sc_wgpu_make_pipeline(ctx, desc);
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
         ctx->pip_desc[id] = *desc;
     }
@@ -651,6 +1029,24 @@ void sc_gfx_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         sc_vulkan_destroy_pipeline(ctx, pip);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_destroy_pipeline(ctx, pip);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_destroy_pipeline(ctx, pip);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_destroy_pipeline(ctx, pip);
         return;
     }
 #endif
@@ -668,6 +1064,24 @@ void sc_gfx_begin_frame(SCGfxContext *ctx, SCColor c) {
         return;
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_begin_frame(ctx, c);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_begin_frame(ctx, c);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_begin_frame(ctx, c);
+        return;
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE && ctx->framebuffer) {
         u8 cr = _sc_f32_to_u8(c.r), cg = _sc_f32_to_u8(c.g),
            cb = _sc_f32_to_u8(c.b), ca = _sc_f32_to_u8(c.a);
@@ -677,6 +1091,9 @@ void sc_gfx_begin_frame(SCGfxContext *ctx, SCColor c) {
             ctx->framebuffer[i*4+1] = cg;
             ctx->framebuffer[i*4+2] = cb;
             ctx->framebuffer[i*4+3] = ca;
+        }
+        if (ctx->depth_buffer) {
+            for (usize i = 0; i < n; i++) ctx->depth_buffer[i] = 1.0f;
         }
     }
 }
@@ -700,14 +1117,43 @@ static f32 _sc_edge(SCVec2 a, SCVec2 b, SCVec2 c) {
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
-/* Rasterise a single triangle into the framebuffer. */
+/* ---- Draw-call sort comparator (pipeline primary, texture secondary) ---- */
+static int _sc_gfx_cmd_sort_cmp(const void *a, const void *b) {
+    const SCGfxDrawCmd *ca = (const SCGfxDrawCmd*)a;
+    const SCGfxDrawCmd *cb = (const SCGfxDrawCmd*)b;
+    u32 pa = ca->pipeline.id, pb = cb->pipeline.id;
+    if (pa != pb) return pa < pb ? -1 : 1;
+    u32 ta = ca->texture.id, tb = cb->texture.id;
+    if (ta != tb) return ta < tb ? -1 : 1;
+    return 0;
+}
+
+static bool _sc_depth_test(SCCompareFunc cmp, f32 frag_z, f32 ref_z) {
+    switch (cmp) {
+        case SC_COMPARE_NEVER:    return false;
+        case SC_COMPARE_LESS:     return frag_z < ref_z;
+        case SC_COMPARE_EQUAL:    return fabsf(frag_z - ref_z) < 0.000001f;
+        case SC_COMPARE_LEQUAL:   return frag_z <= ref_z + 0.000001f;
+        case SC_COMPARE_GREATER:  return frag_z > ref_z;
+        case SC_COMPARE_NOTEQUAL: return fabsf(frag_z - ref_z) >= 0.000001f;
+        case SC_COMPARE_GEQUAL:   return frag_z >= ref_z - 0.000001f;
+        case SC_COMPARE_ALWAYS:
+        default:                  return true;
+    }
+}
+
+/* Rasterise a single triangle into the framebuffer.
+   depth_val is the uniform z for all vertices (0=near, 1=far).
+   if !depth_test depth checking is skipped. */
 static void _sc_raster_tri(SCGfxContext *ctx,
     SCVec2 v0, SCVec2 v1, SCVec2 v2,
     SCVec2 t0, SCVec2 t1, SCVec2 t2,
     u8 r0, u8 g0, u8 b0, u8 a0,
     u8 r1, u8 g1, u8 b1, u8 a1,
     u8 r2, u8 g2, u8 b2, u8 a2,
-    _SCTexData *tex)
+    _SCTexData *tex,
+    f32 depth_val, bool depth_test, bool depth_write,
+    SCCompareFunc depth_compare)
 {
     f32 min_x = SC_MAX(0.0f,  SC_MIN(SC_MIN(v0.x, v1.x), v2.x));
     f32 min_y = SC_MAX(0.0f,  SC_MIN(SC_MIN(v0.y, v1.y), v2.y));
@@ -736,6 +1182,13 @@ static void _sc_raster_tri(SCGfxContext *ctx,
             f32 a = wa * inv_area;
             f32 b = wb * inv_area;
             f32 c = wc * inv_area;
+
+            /* Depth test */
+            usize idx = (usize)y * (usize)ctx->width + (usize)x;
+            if (depth_test && !_sc_depth_test(depth_compare, depth_val, ctx->depth_buffer[idx]))
+                continue;
+            if (depth_write)
+                ctx->depth_buffer[idx] = depth_val;
 
             /* Interpolate attributes */
             f32 u = a * t0.x + b * t1.x + c * t2.x;
@@ -773,7 +1226,7 @@ static void _sc_raster_tri(SCGfxContext *ctx,
             }
 
             /* Alpha blend into framebuffer */
-            usize fb_off = ((usize)y * (usize)ctx->width + (usize)x) * 4;
+            usize fb_off = idx * 4;
             if (ta >= 255 || (tex && tex->pixels)) {
                 ctx->framebuffer[fb_off + 0] = tr;
                 ctx->framebuffer[fb_off + 1] = tg;
@@ -791,9 +1244,33 @@ static void _sc_raster_tri(SCGfxContext *ctx,
 }
 
 void sc_gfx_end_frame(SCGfxContext *ctx) {
+    /* Sort retained draw calls by (pipeline, texture) to reduce state changes */
+    if (ctx->submit_ccount > 1) {
+        qsort(ctx->submit_cmds, ctx->submit_ccount, sizeof(SCGfxDrawCmd),
+              _sc_gfx_cmd_sort_cmp);
+    }
+
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         sc_vulkan_end_frame(ctx);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        sc_metal_end_frame(ctx);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        sc_d3d12_end_frame(ctx);
+        return;
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        sc_wgpu_end_frame(ctx);
         return;
     }
 #endif
@@ -820,7 +1297,7 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
                 v[0].r, v[0].g, v[0].b, v[0].a,
                 v[1].r, v[1].g, v[1].b, v[1].a,
                 v[2].r, v[2].g, v[2].b, v[2].a,
-                tex);
+                tex, 0.0f, false, false, SC_COMPARE_ALWAYS);
         }
     }
 
@@ -840,6 +1317,16 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
         SCGfxVertex2D *verts = (SCGfxVertex2D*)vb->data;
         u32 base_v = cmd->base_vertex;
         u32 vcount = cmd->vertex_count;
+
+        /* Resolve depth state from pipeline */
+        SCGfxDepthState ds = {0};
+        ds.depth_test  = false;
+        ds.depth_write = false;
+        ds.depth_compare = SC_COMPARE_ALWAYS;
+        if (cmd->pipeline.id > 0 && cmd->pipeline.id < SC_GFX_MAX_PIPELINES) {
+            ds = ctx->pip_desc[cmd->pipeline.id].depth;
+        }
+        f32 depth_val = cmd->depth;
 
         if (cmd->index_buf.id > 0 && cmd->index_buf.id < SC_GFX_MAX_BUFFERS) {
             _SCBufData *ib = &ctx->buf_data[cmd->index_buf.id];
@@ -862,7 +1349,8 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
                     _sc_raster_tri(ctx, p0,p1,p2, t0,t1,t2,
                         v0->r,v0->g,v0->b,v0->a,
                         v1->r,v1->g,v1->b,v1->a,
-                        v2->r,v2->g,v2->b,v2->a, tex);
+                        v2->r,v2->g,v2->b,v2->a, tex,
+                        depth_val, ds.depth_test, ds.depth_write, ds.depth_compare);
                 }
                 continue;
             }
@@ -881,7 +1369,8 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
             _sc_raster_tri(ctx, p0,p1,p2, t0,t1,t2,
                 v[0].r,v[0].g,v[0].b,v[0].a,
                 v[1].r,v[1].g,v[1].b,v[1].a,
-                v[2].r,v[2].g,v[2].b,v[2].a, tex);
+                v[2].r,v[2].g,v[2].b,v[2].a, tex,
+                depth_val, ds.depth_test, ds.depth_write, ds.depth_compare);
         }
     }
 }
@@ -897,6 +1386,17 @@ void sc_gfx_set_rasterize(SCGfxContext *ctx, bool enable) {
     if (ctx) ctx->rasterize = enable;
 }
 
+void sc_gfx_lock(SCGfxContext *ctx) {
+    if (ctx && ctx->lock_mutex) {
+        _SC_MTX_LOCK((_SC_MTX_T*)ctx->lock_mutex);
+    }
+}
+void sc_gfx_unlock(SCGfxContext *ctx) {
+    if (ctx && ctx->lock_mutex) {
+        _SC_MTX_UNLOCK((_SC_MTX_T*)ctx->lock_mutex);
+    }
+}
+
 SCResult sc_gfx_resize(SCGfxContext *ctx, u32 width, u32 height) {
     if (!ctx || width == 0 || height == 0) return SC_ERR_INVALID_ARG;
     if (height > (SIZE_MAX / 4) / width) return SC_ERR_INVALID_ARG;
@@ -905,10 +1405,29 @@ SCResult sc_gfx_resize(SCGfxContext *ctx, u32 width, u32 height) {
         return sc_vulkan_resize(ctx, width, height);
     }
 #endif
+#ifdef SC_GFX_BACKEND_METAL
+    if (ctx->backend == SC_BACKEND_METAL) {
+        return sc_metal_resize(ctx, width, height);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_D3D12
+    if (ctx->backend == SC_BACKEND_D3D12) {
+        return sc_d3d12_resize(ctx, width, height);
+    }
+#endif
+#ifdef SC_GFX_BACKEND_WGPU
+    if (ctx->backend == SC_BACKEND_WGPU) {
+        return sc_wgpu_resize(ctx, width, height);
+    }
+#endif
     if (ctx->backend == SC_BACKEND_SOFTWARE) {
-        u8 *fb = (u8*)realloc(ctx->framebuffer, (usize)width * height * 4);
+        usize fb_size = (usize)width * height;
+        u8 *fb = (u8*)realloc(ctx->framebuffer, fb_size * 4);
         if (!fb) return SC_ERR_OOM;
         ctx->framebuffer = fb;
+        f32 *db = (f32*)realloc(ctx->depth_buffer, fb_size * sizeof(f32));
+        if (!db) return SC_ERR_OOM;
+        ctx->depth_buffer = db;
         ctx->width  = width;
         ctx->height = height;
         return SC_OK;

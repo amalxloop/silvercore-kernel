@@ -38,6 +38,7 @@ SCGfxShader   sc_wgpu_make_shader   (SCGfxContext *ctx, const SCGfxShaderDesc *d
 void          sc_wgpu_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
 SCGfxPipeline sc_wgpu_make_pipeline (SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
 void          sc_wgpu_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
+SCResult      sc_wgpu_resize         (SCGfxContext *ctx, u32 width, u32 height);
 
 #ifdef SC_BACKEND_WGPU_IMPLEMENTATION
 #include <stdio.h>
@@ -81,6 +82,10 @@ SCGfxPipeline sc_wgpu_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *
 }
 void sc_wgpu_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
     SC_UNUSED(ctx); SC_UNUSED(pip);
+}
+SCResult sc_wgpu_resize(SCGfxContext *ctx, u32 width, u32 height) {
+    SC_UNUSED(ctx); SC_UNUSED(width); SC_UNUSED(height);
+    return SC_ERR_NOT_SUPPORTED;
 }
 #endif /* SC_BACKEND_WGPU_IMPLEMENTATION */
 #endif /* SC_BACKEND_WGPU_H */

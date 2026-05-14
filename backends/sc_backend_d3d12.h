@@ -36,6 +36,7 @@ SCGfxShader   sc_d3d12_make_shader   (SCGfxContext *ctx, const SCGfxShaderDesc *
 void          sc_d3d12_destroy_shader(SCGfxContext *ctx, SCGfxShader shd);
 SCGfxPipeline sc_d3d12_make_pipeline (SCGfxContext *ctx, const SCGfxPipelineDesc *desc);
 void          sc_d3d12_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip);
+SCResult      sc_d3d12_resize         (SCGfxContext *ctx, u32 width, u32 height);
 
 #ifdef SC_BACKEND_D3D12_IMPLEMENTATION
 #include <stdio.h>
@@ -78,6 +79,10 @@ SCGfxPipeline sc_d3d12_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc 
 }
 void sc_d3d12_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
     SC_UNUSED(ctx); SC_UNUSED(pip);
+}
+SCResult sc_d3d12_resize(SCGfxContext *ctx, u32 width, u32 height) {
+    SC_UNUSED(ctx); SC_UNUSED(width); SC_UNUSED(height);
+    return SC_ERR_NOT_SUPPORTED;
 }
 #endif /* SC_BACKEND_D3D12_IMPLEMENTATION */
 #endif /* SC_BACKEND_D3D12_H */
