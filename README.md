@@ -23,12 +23,13 @@ SilverCore removes the bridge. App logic, layout, animation, and rendering are a
 | Memory | `include/sc_arena.h` | Linear bump allocator + typed slab pool — zero `malloc` on the hot path |
 | Layout engine | `include/sc_layout.h` | Flexbox subset in C: row/column, flex-grow, flex-wrap, align-self, gap, justify-content, align-items, margin, padding |
 | Font system | `include/sc_font.h` | stb_truetype-based font rasterizer with glyph atlas caching and text rendering |
-| Graphics layer | `include/sc_gfx.h` | Backend-agnostic 2-D/3-D API with full resource management: buffers, textures, shaders, pipelines, index buffers, batch 2-D helpers |
+| Graphics layer | `include/sc_gfx.h` | Backend-agnostic 2-D/3-D API: buffers, textures, shaders, pipelines, depth/stencil testing, batch 2-D helpers, draw-call sorting, O(1) resource slot allocator, optional thread-safe mode |
 | Widget/scene | `include/sc_widget.h` | Retained widget tree with animations, events, and layout sync |
 | Runtime | `include/sc_runtime.h` | Cooperative fiber scheduler, MPSC task queue, min-heap timer, 60 Hz loop |
-| Vulkan backend | `backends/sc_backend_vulkan.h` | Full Vulkan 1.0 implementation: swapchain, offscreen, shaders via embedded SPIR-V, push constants, batch rendering, user buffer/shader/pipeline management, indexed draws |
-| Metal backend | `backends/sc_backend_metal.h` | Full API surface declared (make_buffer/destroy_buffer/make_texture/make_shader/make_pipeline etc.) |
-| D3D12 backend | `backends/sc_backend_d3d12.h` | Full API surface declared with SCD3D12Desc configuration |
+| Vulkan backend | `backends/sc_backend_vulkan.h` | Full Vulkan 1.0 implementation: swapchain, offscreen, SPIR-V shaders, push constants, pipeline caching by descriptor hash, batch + indexed draws |
+| Metal backend | `backends/sc_backend_metal.h` | Full Metal implementation (Obj-C): device, command queue, render pipeline, buffers, textures, shader compilation from source, depth/stencil, frame overlap, windowed + headless |
+| D3D12 backend | `backends/sc_backend_d3d12.h` | Full API surface declared with SCD3D12Desc (stub — link d3d12.lib on Windows) |
+| WebGPU backend | `backends/sc_backend_wgpu.h` | Full API surface declared with SCWGPUDesc (stub — link wgpu-native or Dawn) |
 | Python bindings | `bindings/python/silvercore.py` | ctypes wrapper + simulation mode (no native lib required) |
 | WASM glue | `tools/wasm/silvercore.js` | Emscripten JS bridge, Canvas2D blit, requestAnimationFrame loop |
 | PoC app | `apps/stock_dashboard/` | 1 024-ticker stock dashboard, 60 Hz, zero heap allocs per frame |
@@ -130,7 +131,7 @@ cmake --build build-wasm -j$(nproc)
 
 | Option | Default | Description |
 |---|---|---|
-| `SC_GFX_BACKEND` | `SOFTWARE` | Graphics backend: `SOFTWARE` or `VULKAN` |
+| `SC_GFX_BACKEND` | `SOFTWARE` | Graphics backend: `SOFTWARE`, `VULKAN`, `METAL`, `D3D12`, or `WGPU` |
 | `SC_TESTS` | `ON` | Build test suite |
 | `SC_SHARED` | `ON` | Build shared library for Python ctypes |
 | `SC_ASAN` | `OFF` | Enable AddressSanitizer |
@@ -145,6 +146,9 @@ The `.github/workflows/ci.yml` runs four jobs on every push and PR:
 |---|---|
 | `test-software` | Compiles all 6 tests + stock dashboard with `-Wall -Wextra -Wpedantic -Wshadow`, runs suite, produces PPM output |
 | `test-vulkan` | Compiles Vulkan backend header + headless test (requires `libvulkan-dev`) |
+| `test-metal` | *(macOS CI only)* Compiles Metal backend as Obj-C, runs headless test |
+| `test-d3d12` | *(Windows CI only)* Compiles D3D12 stub, verifies stub dispatch |
+| `test-wgpu` | Compiles WebGPU stub, verifies stub dispatch |
 | `test-asan` | Same tests with AddressSanitizer enabled |
 | `test-ubsan` | Same tests with UndefinedBehaviourSanitizer enabled |
 | `wasm` | Cross-compiles with Emscripten SDK, verifies `.wasm`/`.js` output |
@@ -194,9 +198,10 @@ silvercore-kernel/
 │   ├── sc_widget.h       Widget tree, scene, animations
 │   └── sc_runtime.h      Fibers, tasks, timers, event loop
 ├── backends/
-│   ├── sc_backend_vulkan.h   Full Vulkan 1.0 backend (buffers, shaders, pipelines, indexed draws)
-│   ├── sc_backend_metal.h    Metal stub (full API surface)
-│   └── sc_backend_d3d12.h    D3D12 stub (full API surface + SCD3D12Desc)
+│   ├── sc_backend_vulkan.h   Full Vulkan 1.0 backend (buffers, shaders, pipelines, indexed draws, pipeline cache)
+│   ├── sc_backend_metal.h    Full Metal backend (Obj-C, windowed + headless)
+│   ├── sc_backend_d3d12.h    D3D12 stub (full API surface + SCD3D12Desc)
+│   └── sc_backend_wgpu.h     WebGPU stub (full API surface + SCWGPUDesc)
 ├── bindings/
 │   └── python/silvercore.py
 ├── tools/
@@ -215,7 +220,7 @@ silvercore-kernel/
 │   ├── test_arena.c
 │   ├── test_math.c
 │   ├── test_layout.c      35 tests (wrap, gap, align-self, edge cases)
-│   ├── test_gfx.c         9 tests (boundary conditions, frame loop)
+│   ├── test_gfx.c         26 tests (boundary conditions, frame loop, depth/stencil, thread safety, resize)
 │   ├── test_font.c        Font tests (requires TEST_FONT_PATH)
 │   └── test_runtime.c
 └── CMakeLists.txt
