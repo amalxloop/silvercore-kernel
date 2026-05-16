@@ -57,6 +57,7 @@
 #include "../../include/sc_gfx.h"
 #include "../../include/sc_widget.h"
 #include "../../include/sc_runtime.h"
+#include "../../include/sc_input.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -162,6 +163,9 @@ typedef struct Dashboard {
     i32   w_cell_sym  [TICKER_COUNT];
     i32   w_cell_price[TICKER_COUNT];
     i32   w_cell_bar  [TICKER_COUNT];
+
+    /* Input */
+    SCInputState input;
 
     /* Runtime */
     SCEventLoop loop;
@@ -362,6 +366,9 @@ int main(void) {
     tickers_init();
     build_scene(d);
 
+    /* --- Input --------------------------------------------------------- */
+    sc_input_init(&d->input);
+
     /* --- Runtime ------------------------------------------------------- */
     sc_loop_init(&d->loop, &d->task_arena);
 
@@ -380,6 +387,9 @@ int main(void) {
         update_dashboard(d, dt);
         sc_scene_render(&d->scene);
         sc_gfx_end_frame(d->gfx);
+
+        /* Advance input state (platform would call sc_input_set_key etc. here) */
+        sc_input_end_frame(&d->input);
 
         /* Drain task queue */
         sc_loop_tick(&d->loop, t_now);

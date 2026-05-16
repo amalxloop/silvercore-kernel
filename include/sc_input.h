@@ -225,6 +225,7 @@ SC_INLINE void sc_input_set_key(SCInputState *s, SCKey k, bool down) {
     if (s->keys_cur[k] != down) {
         s->keys_cur[k] = down;
         if (down) s->key_count++;
+        else if (s->key_count > 0) s->key_count--;
     }
 }
 SC_INLINE void sc_input_set_mouse_button(SCInputState *s, SCMouseButton b, bool down) {

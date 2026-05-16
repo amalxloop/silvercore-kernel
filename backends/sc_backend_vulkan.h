@@ -956,7 +956,11 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
 
     s->width    = desc->width  ? desc->width  : 1280;
     s->height   = desc->height ? desc->height : 720;
-    s->headless = vk_desc ? vk_desc->headless : true;
+    if (vk_desc) {
+        s->headless = vk_desc->headless;
+    } else {
+        s->headless = (desc->native_window == NULL);
+    }
 
     /* ---- Instance ---------------------------------------------------- */
     VkApplicationInfo app = {0};

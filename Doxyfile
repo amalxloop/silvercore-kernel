@@ -1,0 +1,44 @@
+# SilverCore Doxygen configuration
+PROJECT_NAME           = "SilverCore"
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "Minimalist C kernel with graphics, layout, input & runtime subsystems"
+OUTPUT_DIRECTORY       = docs/api
+INPUT                  = include/sc_types.h \
+                         include/sc_math.h \
+                         include/sc_gfx.h \
+                         include/sc_layout.h \
+                         include/sc_widget.h \
+                         include/sc_input.h \
+                         include/sc_runtime.h \
+                         include/sc_font.h \
+                         include/sc_arena.h
+RECURSIVE              = NO
+FILE_PATTERNS          = *.h
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_LOCAL_CLASSES  = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = YES
+CASE_SENSE_NAMES       = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = html
+HTML_TIMESTAMP         = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+USE_MATHJAX            = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = SC_INLINE=inline \
+                         SC_FORCE_INLINE=inline \
+                         SC_NORETURN= \
+                         SC_PACKED= \
+                         SC_UNUSED(x)= \
+                         "SC_ARRAY_LEN(a)=(sizeof(a)/sizeof((a)[0]))" \
+                         SC_COMPILER_CLANG=1 \
+                         SC_PLATFORM_LINUX=1
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES

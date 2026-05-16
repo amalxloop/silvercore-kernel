@@ -15,5 +15,5 @@ __pycache__/
 *.png
 *.bmp
 *.tga
-test_*
+/test_*
 /tmp/

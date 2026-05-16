@@ -185,6 +185,18 @@ if(TARGET stock_dashboard)
 endif()
 
 # ---------------------------------------------------------------------------
+# Doxygen docs
+# ---------------------------------------------------------------------------
+find_program(DOXYGEN doxygen)
+if(DOXYGEN)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN} ${CMAKE_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen"
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 message(STATUS "")

@@ -29,10 +29,12 @@
 #ifndef SC_WIDGET_H
 #define SC_WIDGET_H
 
+#include <string.h>
 #include "sc_types.h"
 #include "sc_gfx.h"
 #include "sc_layout.h"
 #include "sc_arena.h"
+#include "sc_input.h"
 
 /* Forward declaration for font system */
 typedef struct SCFont SCFont;
@@ -479,4 +481,170 @@ void sc_scene_dispatch_event(SCScene *s, const SCEvent *ev) {
 }
 
 #endif /* SC_WIDGET_IMPLEMENTATION */
+
+/* -------------------------------------------------------------------------
+ * Immediate-mode widget helpers (ImGui-style)
+ *
+ * These functions draw directly using sc_gfx batch primitives and read
+ * from an SCInputState to detect clicks / drags.
+ *
+ * Usage pattern per frame:
+ *   SCImGui im;
+ *   sc_im_begin(&im, &input);
+ *   if (sc_im_button(&im, ctx, rect, "OK")) { ... }
+ *   sc_im_slider(&im, ctx, rect, "vol", &vol, 0, 1);
+ * ---------------------------------------------------------------------- */
+
+#ifndef SC_IM_HOT_NONE
+#define SC_IM_HOT_NONE ((u32)-1)
+
+typedef struct SCImGui {
+    u32  hot_item;      /* widget ID currently hovered                    */
+    u32  active_item;   /* widget ID currently being dragged / clicked   */
+    u32  last_item;     /* ID assigned to the most recently processed    */
+    bool mouse_down;    /* left mouse button held this frame             */
+    f32  mouse_x, mouse_y;
+} SCImGui;
+
+SC_INLINE void sc_im_begin(SCImGui *im, const SCInputState *input) {
+    im->hot_item   = SC_IM_HOT_NONE;
+    im->last_item  = 0;
+    im->mouse_down = sc_input_mouse_down(input, SC_MOUSE_LEFT);
+    im->mouse_x    = sc_input_mouse_x(input);
+    im->mouse_y    = sc_input_mouse_y(input);
+}
+
+SC_INLINE bool sc_im_button(SCImGui *im, SCGfxContext *ctx,
+                             SCRect2f bounds, const char *label) {
+    u32 id = ++im->last_item;
+    bool hovered = (im->mouse_x >= bounds.x &&
+                    im->mouse_x <= bounds.x + bounds.w &&
+                    im->mouse_y >= bounds.y &&
+                    im->mouse_y <= bounds.y + bounds.h);
+
+    if (hovered) im->hot_item = id;
+
+    bool clicked = false;
+    if (im->active_item == SC_IM_HOT_NONE && hovered && im->mouse_down) {
+        im->active_item = id;
+    }
+    if (im->active_item == id && !im->mouse_down) {
+        if (hovered) clicked = true;
+        im->active_item = SC_IM_HOT_NONE;
+    }
+
+    SCColor bg = (im->active_item == id) ? sc_rgba(0.3f,0.5f,0.8f,1)
+                : (hovered)               ? sc_rgba(0.2f,0.4f,0.7f,1)
+                                          : sc_rgba(0.15f,0.25f,0.4f,1);
+    sc_gfx_draw_rect(ctx, bounds, bg);
+    if (label && label[0]) {
+        f32 tw = (f32)strlen(label) * 7.0f;
+        f32 tx = bounds.x + (bounds.w - tw) * 0.5f;
+        f32 ty = bounds.y + (bounds.h - 10.0f) * 0.5f;
+        sc_gfx_draw_rect(ctx, (SCRect2f){tx, ty, tw, 10.0f},
+                         sc_rgba(0.9f,0.9f,1,1));
+    }
+    return clicked;
+}
+
+SC_INLINE bool sc_im_slider(SCImGui *im, SCGfxContext *ctx,
+                             SCRect2f bounds, const char *label,
+                             f32 *value, f32 min, f32 max) {
+    u32 id = ++im->last_item;
+    bool hovered = (im->mouse_x >= bounds.x &&
+                    im->mouse_x <= bounds.x + bounds.w &&
+                    im->mouse_y >= bounds.y &&
+                    im->mouse_y <= bounds.y + bounds.h);
+    if (hovered) im->hot_item = id;
+
+    if (hovered && im->mouse_down) {
+        im->active_item = id;
+    }
+    if (im->active_item == id && !im->mouse_down) {
+        im->active_item = SC_IM_HOT_NONE;
+    }
+
+    if (im->active_item == id) {
+        f32 t = (im->mouse_x - bounds.x) / bounds.w;
+        *value = min + (max - min) * SC_CLAMP(t, 0.0f, 1.0f);
+    }
+
+    f32 frac = (*value - min) / (max - min);
+    frac = SC_CLAMP(frac, 0.0f, 1.0f);
+
+    sc_gfx_draw_rect(ctx, bounds, sc_rgba(0.1f,0.12f,0.15f,1));
+    sc_gfx_draw_rect(ctx,
+        (SCRect2f){bounds.x, bounds.y, bounds.w * frac, bounds.h},
+        sc_rgba(0.2f,0.5f,0.8f,1));
+
+    if (label && label[0]) {
+        f32 tx = bounds.x + 4;
+        f32 ty = bounds.y + (bounds.h - 10.0f) * 0.5f;
+        sc_gfx_draw_rect(ctx, (SCRect2f){tx, ty, (f32)strlen(label) * 6.0f, 10.0f},
+                         sc_rgba(0.9f,0.9f,1,1));
+    }
+    return im->active_item == id;
+}
+
+SC_INLINE bool sc_im_checkbox(SCImGui *im, SCGfxContext *ctx,
+                               SCRect2f bounds, const char *label,
+                               bool *checked) {
+    u32 id = ++im->last_item;
+    bool hovered = (im->mouse_x >= bounds.x &&
+                    im->mouse_x <= bounds.x + bounds.w &&
+                    im->mouse_y >= bounds.y &&
+                    im->mouse_y <= bounds.y + bounds.h);
+    if (hovered) im->hot_item = id;
+
+    if (im->active_item == SC_IM_HOT_NONE && hovered && im->mouse_down) {
+        im->active_item = id;
+    }
+    if (im->active_item == id && !im->mouse_down) {
+        if (hovered) *checked = !*checked;
+        im->active_item = SC_IM_HOT_NONE;
+    }
+
+    SCRect2f box = {bounds.x, bounds.y, bounds.h, bounds.h};
+    sc_gfx_draw_rect(ctx, box, *checked ? sc_rgba(0.2f,0.6f,0.3f,1)
+                                        : sc_rgba(0.2f,0.2f,0.25f,1));
+    if (*checked) {
+        f32 pad = box.w * 0.2f;
+        sc_gfx_draw_rect(ctx,
+            (SCRect2f){box.x+pad, box.y+pad, box.w-pad*2, box.h-pad*2},
+            sc_rgba(0.5f,1,0.5f,1));
+    }
+    if (label && label[0]) {
+        f32 tx = bounds.x + bounds.h + 6;
+        f32 ty = bounds.y + (bounds.h - 10.0f) * 0.5f;
+        sc_gfx_draw_rect(ctx, (SCRect2f){tx, ty, (f32)strlen(label) * 6.0f, 10.0f},
+                         sc_rgba(0.9f,0.9f,1,1));
+    }
+    return *checked;
+}
+
+SC_INLINE void sc_im_label(SCImGui *im, SCGfxContext *ctx,
+                            SCRect2f bounds, const char *text, SCColor color) {
+    (void)im;
+    sc_gfx_draw_rect(ctx, bounds, color);
+    if (text && text[0]) {
+        f32 tx = bounds.x + 4;
+        f32 ty = bounds.y + (bounds.h - 10.0f) * 0.5f;
+        sc_gfx_draw_rect(ctx, (SCRect2f){tx, ty, (f32)strlen(text) * 6.0f, 10.0f},
+                         sc_rgba(0.9f,0.9f,1,1));
+    }
+}
+
+SC_INLINE void sc_im_progress(SCImGui *im, SCGfxContext *ctx,
+                               SCRect2f bounds, f32 fraction, SCColor color) {
+    (void)im;
+    fraction = SC_CLAMP(fraction, 0.0f, 1.0f);
+    sc_gfx_draw_rect(ctx, bounds, sc_rgba(0.1f,0.1f,0.12f,1));
+    if (fraction > 0.01f) {
+        sc_gfx_draw_rect(ctx,
+            (SCRect2f){bounds.x, bounds.y, bounds.w * fraction, bounds.h},
+            color);
+    }
+}
+
+#endif /* SC_IM_HOT_NONE */
 #endif /* SC_WIDGET_H */
