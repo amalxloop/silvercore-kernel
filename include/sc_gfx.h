@@ -1117,6 +1117,23 @@ static f32 _sc_edge(SCVec2 a, SCVec2 b, SCVec2 c) {
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
+/* ---- MSAA sample positions (N-sample offsets from pixel centre) -------- */
+/* Indexed linearly; 1x uses offset[0], 2x uses offset[0..1], 4x uses offset[0..3] */
+#define _SC_MSAA_MAX_SAMPLES 4
+static const f32 _sc_msaa_offsets[_SC_MSAA_MAX_SAMPLES][2] = {
+    { 0.0f, 0.0f },       /* sample 0 - always used            */
+    {-0.25f, 0.25f},      /* sample 1 - used in 2x and 4x      */
+    { 0.25f,-0.25f},      /* sample 2 - used in 4x             */
+    {-0.25f,-0.25f},      /* sample 3 - used in 4x             */
+};
+
+/* Return the number of sample positions for a given sample_count (1/2/4) */
+SC_INLINE u32 _sc_msaa_sample_count(u32 sc) {
+    if (sc >= 4) return 4;
+    if (sc == 2) return 2;
+    return 1;
+}
+
 /* ---- Draw-call sort comparator (pipeline primary, texture secondary) ---- */
 static int _sc_gfx_cmd_sort_cmp(const void *a, const void *b) {
     const SCGfxDrawCmd *ca = (const SCGfxDrawCmd*)a;
@@ -1144,7 +1161,8 @@ static bool _sc_depth_test(SCCompareFunc cmp, f32 frag_z, f32 ref_z) {
 
 /* Rasterise a single triangle into the framebuffer.
    depth_val is the uniform z for all vertices (0=near, 1=far).
-   if !depth_test depth checking is skipped. */
+   if !depth_test depth checking is skipped.
+   scissor of {0,0,0,0} means no scissor. */
 static void _sc_raster_tri(SCGfxContext *ctx,
     SCVec2 v0, SCVec2 v1, SCVec2 v2,
     SCVec2 t0, SCVec2 t1, SCVec2 t2,
@@ -1153,7 +1171,8 @@ static void _sc_raster_tri(SCGfxContext *ctx,
     u8 r2, u8 g2, u8 b2, u8 a2,
     _SCTexData *tex,
     f32 depth_val, bool depth_test, bool depth_write,
-    SCCompareFunc depth_compare)
+    SCCompareFunc depth_compare,
+    SCRect2i scissor)
 {
     f32 min_x = SC_MAX(0.0f,  SC_MIN(SC_MIN(v0.x, v1.x), v2.x));
     f32 min_y = SC_MAX(0.0f,  SC_MIN(SC_MIN(v0.y, v1.y), v2.y));
@@ -1169,39 +1188,75 @@ static void _sc_raster_tri(SCGfxContext *ctx,
     int ix0 = (int)min_x, iy0 = (int)min_y;
     int ix1 = (int)max_x, iy1 = (int)max_y;
 
+    /* Apply scissor rect if valid */
+    if (scissor.w > 0 && scissor.h > 0) {
+        i32 sx0 = scissor.x;
+        i32 sy0 = scissor.y;
+        i32 sx1 = scissor.x + scissor.w - 1;
+        i32 sy1 = scissor.y + scissor.h - 1;
+        if (ix0 > sx1 || iy0 > sy1 || ix1 < sx0 || iy1 < sy0) return;
+        if (ix0 < sx0) ix0 = sx0;
+        if (iy0 < sy0) iy0 = sy0;
+        if (ix1 > sx1) ix1 = sx1;
+        if (iy1 > sy1) iy1 = sy1;
+    }
+
+    u32 nsamples = _sc_msaa_sample_count(ctx->sample_count);
+
     for (int y = iy0; y <= iy1; y++) {
         for (int x = ix0; x <= ix1; x++) {
-            SCVec2 p = {(f32)x + 0.5f, (f32)y + 0.5f};
-            f32 wa = _sc_edge(v1, v2, p);
-            f32 wb = _sc_edge(v2, v0, p);
-            f32 wc = _sc_edge(v0, v1, p);
+            /* --- MSAA: evaluate all sub-pixel samples --- */
+            u32 coverage = 0;
+            u32 acc_r = 0, acc_g = 0, acc_b = 0, acc_a = 0;
+            f32 sum_a = 0, sum_b = 0, sum_c = 0;
 
-            /* Check if point is inside triangle (with small epsilon for edge pixels) */
-            if (wa < -0.01f || wb < -0.01f || wc < -0.01f) continue;
+            for (u32 s = 0; s < nsamples; s++) {
+                SCVec2 sp = {(f32)x + 0.5f + _sc_msaa_offsets[s][0],
+                             (f32)y + 0.5f + _sc_msaa_offsets[s][1]};
+                f32 swa = _sc_edge(v1, v2, sp);
+                f32 swb = _sc_edge(v2, v0, sp);
+                f32 swc = _sc_edge(v0, v1, sp);
 
-            f32 a = wa * inv_area;
-            f32 b = wb * inv_area;
-            f32 c = wc * inv_area;
+                if (swa < -0.01f || swb < -0.01f || swc < -0.01f) continue;
 
-            /* Depth test */
+                f32 sa = swa * inv_area;
+                f32 sb = swb * inv_area;
+                f32 sc = swc * inv_area;
+
+                acc_r += (u32)(sa * (f32)r0 + sb * (f32)r1 + sc * (f32)r2);
+                acc_g += (u32)(sa * (f32)g0 + sb * (f32)g1 + sc * (f32)g2);
+                acc_b += (u32)(sa * (f32)b0 + sb * (f32)b1 + sc * (f32)b2);
+                acc_a += (u32)(sa * (f32)a0 + sb * (f32)a1 + sc * (f32)a2);
+                sum_a += sa; sum_b += sb; sum_c += sc;
+                coverage++;
+            }
+
+            if (coverage == 0) continue;
+
             usize idx = (usize)y * (usize)ctx->width + (usize)x;
-            if (depth_test && !_sc_depth_test(depth_compare, depth_val, ctx->depth_buffer[idx]))
-                continue;
+
+            /* Depth test (evaluated at pixel centroid when MSAA active) */
+            f32 centroid_a = sum_a / (f32)coverage;
+            f32 centroid_b = sum_b / (f32)coverage;
+            f32 centroid_c = sum_c / (f32)coverage;
+
+            if (depth_test) {
+                f32 depth_at_sample = centroid_a * depth_val + centroid_b * depth_val + centroid_c * depth_val;
+                if (!_sc_depth_test(depth_compare, depth_at_sample, ctx->depth_buffer[idx]))
+                    continue;
+            }
             if (depth_write)
                 ctx->depth_buffer[idx] = depth_val;
 
-            /* Interpolate attributes */
-            f32 u = a * t0.x + b * t1.x + c * t2.x;
-            f32 v = a * t0.y + b * t1.y + c * t2.y;
-            u32 ur = (u32)(a * (f32)r0 + b * (f32)r1 + c * (f32)r2);
-            u32 ug = (u32)(a * (f32)g0 + b * (f32)g1 + c * (f32)g2);
-            u32 ub = (u32)(a * (f32)b0 + b * (f32)b1 + c * (f32)b2);
-            u32 ua = (u32)(a * (f32)a0 + b * (f32)a1 + c * (f32)a2);
+            /* Resolve: average color across covered samples */
+            u8 sr = (u8)SC_MIN(acc_r / coverage, 255u);
+            u8 sg = (u8)SC_MIN(acc_g / coverage, 255u);
+            u8 sb = (u8)SC_MIN(acc_b / coverage, 255u);
+            u8 sa = (u8)SC_MIN(acc_a / coverage, 255u);
 
-            u8 sr = (u8)SC_MIN(ur, 255u);
-            u8 sg = (u8)SC_MIN(ug, 255u);
-            u8 sb = (u8)SC_MIN(ub, 255u);
-            u8 sa = (u8)SC_MIN(ua, 255u);
+            /* Interpolate texcoord at centroid */
+            f32 u = centroid_a * t0.x + centroid_b * t1.x + centroid_c * t2.x;
+            f32 v = centroid_a * t0.y + centroid_b * t1.y + centroid_c * t2.y;
 
             /* Sample texture if available */
             u8 tr = 255, tg = 255, tb = 255, ta = 255;
@@ -1292,12 +1347,13 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
             SCVec2 p1 = {v[1].x, v[1].y}; SCVec2 t1 = {v[1].u, v[1].v};
             SCVec2 p2 = {v[2].x, v[2].y}; SCVec2 t2 = {v[2].u, v[2].v};
 
+            SCRect2i no_scissor = {0,0,0,0};
             _sc_raster_tri(ctx,
                 p0, p1, p2, t0, t1, t2,
                 v[0].r, v[0].g, v[0].b, v[0].a,
                 v[1].r, v[1].g, v[1].b, v[1].a,
                 v[2].r, v[2].g, v[2].b, v[2].a,
-                tex, 0.0f, false, false, SC_COMPARE_ALWAYS);
+                tex, 0.0f, false, false, SC_COMPARE_ALWAYS, no_scissor);
         }
     }
 
@@ -1350,7 +1406,8 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
                         v0->r,v0->g,v0->b,v0->a,
                         v1->r,v1->g,v1->b,v1->a,
                         v2->r,v2->g,v2->b,v2->a, tex,
-                        depth_val, ds.depth_test, ds.depth_write, ds.depth_compare);
+                        depth_val, ds.depth_test, ds.depth_write, ds.depth_compare,
+                        cmd->scissor);
                 }
                 continue;
             }
@@ -1370,7 +1427,8 @@ void sc_gfx_end_frame(SCGfxContext *ctx) {
                 v[0].r,v[0].g,v[0].b,v[0].a,
                 v[1].r,v[1].g,v[1].b,v[1].a,
                 v[2].r,v[2].g,v[2].b,v[2].a, tex,
-                depth_val, ds.depth_test, ds.depth_write, ds.depth_compare);
+                depth_val, ds.depth_test, ds.depth_write, ds.depth_compare,
+                cmd->scissor);
         }
     }
 }

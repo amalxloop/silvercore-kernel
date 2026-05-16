@@ -111,6 +111,18 @@ typedef uintptr_t uptr;
 #define SC_PAGE_SIZE        4096
 
 /* -------------------------------------------------------------------------
+ * Version
+ * ---------------------------------------------------------------------- */
+#define SC_VERSION_MAJOR 0
+#define SC_VERSION_MINOR 1
+#define SC_VERSION_PATCH 0
+
+#define SC_VERSION_CHECK(major,minor,patch) \
+    ((major) * 10000 + (minor) * 100 + (patch))
+
+#define SC_CURRENT_VERSION SC_VERSION_CHECK(SC_VERSION_MAJOR, SC_VERSION_MINOR, SC_VERSION_PATCH)
+
+/* -------------------------------------------------------------------------
  * Utility macros
  * ---------------------------------------------------------------------- */
 #define SC_ARRAY_LEN(a)     (sizeof(a) / sizeof((a)[0]))

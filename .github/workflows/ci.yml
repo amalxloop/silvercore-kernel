@@ -73,6 +73,30 @@ jobs:
               tests/${t}.c -lm -o /tmp/$t && /tmp/$t
           done
 
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Metal backend (Obj-C)
+        run: |
+          clang -I include -I tools -DSC_GFX_IMPLEMENTATION \
+            -DSC_GFX_BACKEND_METAL -DSC_BACKEND_METAL_IMPLEMENTATION \
+            -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
+            -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
+            -x objective-c -c backends/sc_backend_metal.h -o /dev/null \
+            -fobjc-arc -Wall -Wextra -Wpedantic -Wshadow
+      - name: Build and run Metal test
+        run: |
+          clang -I include -I tools -I backends \
+            -DSC_GFX_BACKEND_METAL -DSC_BACKEND_METAL_IMPLEMENTATION \
+            -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
+            -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
+            -Wall -Wextra -Wpedantic -Wshadow \
+            -x objective-c backends/sc_backend_metal.h tests/test_gfx.c \
+            -fobjc-arc -lm -framework Metal -framework MetalKit \
+            -framework Cocoa -o /tmp/test_metal
+          /tmp/test_metal
+
   wasm:
     runs-on: ubuntu-latest
     steps:

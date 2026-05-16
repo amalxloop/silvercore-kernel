@@ -162,12 +162,23 @@ endif()
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-install(TARGETS sc_kernel_static ARCHIVE DESTINATION lib)
+install(TARGETS sc_kernel_static
+    EXPORT  SilverCore-targets
+    ARCHIVE DESTINATION lib
+)
 if(SC_SHARED)
-    install(TARGETS sc_kernel LIBRARY DESTINATION lib)
+    install(TARGETS sc_kernel
+        EXPORT  SilverCore-targets
+        LIBRARY DESTINATION lib
+    )
 endif()
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/ DESTINATION include/silvercore
     FILES_MATCHING PATTERN "*.h"
+)
+install(EXPORT SilverCore-targets
+    FILE            SilverCoreConfig.cmake
+    NAMESPACE       SilverCore::
+    DESTINATION     lib/cmake/SilverCore
 )
 if(TARGET stock_dashboard)
     install(TARGETS stock_dashboard RUNTIME DESTINATION bin)
