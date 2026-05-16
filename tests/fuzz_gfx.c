@@ -54,8 +54,23 @@ int main(int argc, char **argv) {
     }
 
     u8 dummy_data[64*64*4];
-    for (u32 i = 0; i < sizeof(dummy_data); i++)
-        dummy_data[i] = (u8)(xorshift32() & 0xFF);
+    {
+        /* Fill with valid SCGfxVertex2D data (small triangles in [0,64) range)
+           instead of random bytes — random bytes produce NaN vertex positions
+           that crash the software rasterizer. */
+        SCGfxVertex2D *dv = (SCGfxVertex2D*)dummy_data;
+        u32 max_v = sizeof(dummy_data) / sizeof(SCGfxVertex2D);
+        for (u32 i = 0; i < max_v; i++) {
+            f32 x = (f32)(i % 64);
+            f32 y = (f32)(i / 64);
+            dv[i].x = x; dv[i].y = y;
+            dv[i].u = (f32)(xorshift32() & 0xFF) / 255.0f;
+            dv[i].v = (f32)(xorshift32() & 0xFF) / 255.0f;
+            u32 c = xorshift32();
+            dv[i].r = (u8)(c); dv[i].g = (u8)(c>>8);
+            dv[i].b = (u8)(c>>16); dv[i].a = 255;
+        }
+    }
 
     int buf_alive   = 0;
     int tex_alive   = 0;

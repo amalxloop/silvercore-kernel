@@ -1180,6 +1180,10 @@ static void _sc_raster_tri(SCGfxContext *ctx,
     f32 max_y = SC_MIN((f32)ctx->height - 1.0f, SC_MAX(SC_MAX(v0.y, v1.y), v2.y));
 
     if (min_x > max_x || min_y > max_y) return;
+    /* Reject NaN / Inf vertex positions — they produce INT_MIN from
+       float-to-int conversion and cause out-of-bounds buffer writes. */
+    if (!(min_x >= 0.0f) || !(min_y >= 0.0f) ||
+        !(max_x >= 0.0f) || !(max_y >= 0.0f)) return;
 
     f32 area = _sc_edge(v0, v1, v2);
     if (fabsf(area) < 0.0001f) return;
