@@ -1227,10 +1227,21 @@ static void _sc_raster_tri(SCGfxContext *ctx,
                 f32 sb = swb * inv_area;
                 f32 sc = swc * inv_area;
 
-                acc_r += (u32)(sa * (f32)r0 + sb * (f32)r1 + sc * (f32)r2);
-                acc_g += (u32)(sa * (f32)g0 + sb * (f32)g1 + sc * (f32)g2);
-                acc_b += (u32)(sa * (f32)b0 + sb * (f32)b1 + sc * (f32)b2);
-                acc_a += (u32)(sa * (f32)a0 + sb * (f32)a1 + sc * (f32)a2);
+                /* Guard against NaN/Inf barycentric coordinates (e.g. from
+                   random vertex data written via buffer updates).  isfinite
+                   check via self-equality + range test to avoid <math.h>. */
+                if (!(sa >= -1e6f && sa <= 1e6f &&
+                      sb >= -1e6f && sb <= 1e6f &&
+                      sc >= -1e6f && sc <= 1e6f)) continue;
+
+                f32 cr = sa * (f32)r0 + sb * (f32)r1 + sc * (f32)r2;
+                f32 cg = sa * (f32)g0 + sb * (f32)g1 + sc * (f32)g2;
+                f32 cb = sa * (f32)b0 + sb * (f32)b1 + sc * (f32)b2;
+                f32 ca = sa * (f32)a0 + sb * (f32)a1 + sc * (f32)a2;
+                acc_r += (u32)(cr > 0.0f ? cr : 0.0f);
+                acc_g += (u32)(cg > 0.0f ? cg : 0.0f);
+                acc_b += (u32)(cb > 0.0f ? cb : 0.0f);
+                acc_a += (u32)(ca > 0.0f ? ca : 0.0f);
                 sum_a += sa; sum_b += sb; sum_c += sc;
                 coverage++;
             }

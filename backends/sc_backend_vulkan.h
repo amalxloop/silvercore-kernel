@@ -305,10 +305,10 @@ static VkResult _sc_vk_create_pipeline(VkDevice dev,
     VkPipelineDepthStencilStateCreateInfo ds = {0};
     ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     if (depth) {
-        ds.depthTestEnabled  = depth->depth_test ? VK_TRUE : VK_FALSE;
-        ds.depthWriteEnabled = depth->depth_write ? VK_TRUE : VK_FALSE;
+        ds.depthTestEnable  = depth->depth_test ? VK_TRUE : VK_FALSE;
+        ds.depthWriteEnable = depth->depth_write ? VK_TRUE : VK_FALSE;
         ds.depthCompareOp    = (VkCompareOp)depth->depth_compare;
-        ds.stencilTestEnabled = depth->stencil_test ? VK_TRUE : VK_FALSE;
+        ds.stencilTestEnable = depth->stencil_test ? VK_TRUE : VK_FALSE;
         ds.front.failOp      = (VkStencilOp)depth->stencil_front.fail_op;
         ds.front.passOp      = (VkStencilOp)depth->stencil_front.pass_op;
         ds.front.depthFailOp = (VkStencilOp)depth->stencil_front.depth_fail_op;
@@ -349,7 +349,6 @@ static VkResult _sc_vk_create_rp(VkDevice dev, VkFormat fmt,
                                   VkSampleCountFlagBits samples,
                                   VkRenderPass *out, bool present) {
     VkAttachmentDescription att[2] = {{0},{0}};
-    u32 att_count;
 
     if (samples > VK_SAMPLE_COUNT_1_BIT) {
         /* Attachment 0: MSAA color */
@@ -382,7 +381,6 @@ static VkResult _sc_vk_create_rp(VkDevice dev, VkFormat fmt,
         ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
         ci.attachmentCount = 2; ci.pAttachments = att;
         ci.subpassCount    = 1; ci.pSubpasses   = &sp;
-        att_count = 2;
         return vkCreateRenderPass(dev, &ci, NULL, out);
     }
 
@@ -1250,6 +1248,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     return SC_OK;
 }
 
+static bool _sc_vk_pip_is_cached(_SCVkState *s, VkPipeline pip);
 void sc_vulkan_shutdown(SCGfxContext *ctx) {
     if (!ctx || !ctx->backend_data) return;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
@@ -1569,8 +1568,8 @@ SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc
                         ? s->shd_modules[shd_id] : s->shd_modules[0];
     VkShaderModule fs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_fs_modules[shd_id])
                         ? s->shd_fs_modules[shd_id] : s->shd_fs_modules[0];
-    if (!vs) { _sc_vk_make_shader(s->device, vk_vert_spv, vk_vert_spv_len, &vs); }
-    if (!fs) { _sc_vk_make_shader(s->device, vk_frag_spv, vk_frag_spv_len, &fs); }
+    if (!vs) { _sc_vk_make_shader(s->device, _sc_vk_vert_spv, _sc_vk_vert_spv_len, &vs); }
+    if (!fs) { _sc_vk_make_shader(s->device, _sc_vk_frag_spv, _sc_vk_frag_spv_len, &fs); }
 
     r = _sc_vk_create_pipeline(s->device, vs, fs,
                                s->user_pip_layouts[id], s->render_pass,
@@ -1877,7 +1876,8 @@ SCResult sc_vulkan_resize(SCGfxContext *ctx, u32 width, u32 height) {
         if (s->os_resolve_view)  vkDestroyImageView(s->device, s->os_resolve_view, NULL);
         if (s->os_resolve_image) vkDestroyImage(s->device, s->os_resolve_image, NULL);
         if (s->os_resolve_mem)   vkFreeMemory(s->device, s->os_resolve_mem, NULL);
-        s->os_fbo = s->os_view = VK_NULL_HANDLE;
+        s->os_fbo  = VK_NULL_HANDLE;
+        s->os_view = VK_NULL_HANDLE;
         s->os_image = s->os_resolve_image = VK_NULL_HANDLE;
         s->os_mem = s->os_resolve_mem = VK_NULL_HANDLE;
         s->os_resolve_view = VK_NULL_HANDLE;
