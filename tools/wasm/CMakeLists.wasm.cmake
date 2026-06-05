@@ -77,7 +77,7 @@ string(JOIN " " WASM_LINK_FLAGS_STR ${WASM_LINK_FLAGS})
 # WASM target
 # ---------------------------------------------------------------------------
 add_executable(silvercore_wasm
-    ${CMAKE_BINARY_DIR}/sc_kernel.c          # auto-generated unity build TU
+    ${CMAKE_SOURCE_DIR}/src/sc_kernel.c
     ${CMAKE_SOURCE_DIR}/apps/stock_dashboard/stock_dashboard.c
 )
 
