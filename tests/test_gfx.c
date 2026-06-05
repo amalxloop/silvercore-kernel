@@ -5,10 +5,6 @@
  * (or METAL / D3D12) and pass -DSC_TEST_BACKEND=SC_BACKEND_VULKAN to
  * run against a hardware backend.
  */
-#define SC_GFX_IMPLEMENTATION
-#define SC_LAYOUT_IMPLEMENTATION
-#define SC_WIDGET_IMPLEMENTATION
-#define SC_RUNTIME_IMPLEMENTATION
 #if !defined(SC_GFX_BACKEND_SOFTWARE) && \
     !defined(SC_GFX_BACKEND_VULKAN) && \
     !defined(SC_GFX_BACKEND_METAL) && \
@@ -16,6 +12,23 @@
     !defined(SC_GFX_BACKEND_WGPU)
 #define SC_GFX_BACKEND_SOFTWARE
 #endif
+
+/* When SC_TEST_NO_IMPL is defined, the implementation is provided by a
+   separately-compiled backend header (Vulkan/Metal/D3D12). */
+#ifndef SC_TEST_NO_IMPL
+#ifndef SC_GFX_IMPLEMENTATION
+#define SC_GFX_IMPLEMENTATION
+#endif
+#ifndef SC_LAYOUT_IMPLEMENTATION
+#define SC_LAYOUT_IMPLEMENTATION
+#endif
+#ifndef SC_WIDGET_IMPLEMENTATION
+#define SC_WIDGET_IMPLEMENTATION
+#endif
+#ifndef SC_RUNTIME_IMPLEMENTATION
+#define SC_RUNTIME_IMPLEMENTATION
+#endif
+#endif /* !SC_TEST_NO_IMPL */
 
 #ifndef SC_TEST_BACKEND
 #define SC_TEST_BACKEND SC_BACKEND_SOFTWARE

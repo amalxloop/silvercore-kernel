@@ -47,8 +47,14 @@ jobs:
             -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
             -DSC_TEST_BACKEND=SC_BACKEND_VULKAN \
             -Wall -Wextra -Wpedantic -Wshadow \
-            -x c backends/sc_backend_vulkan.h tests/test_gfx.c \
-            -lm -lvulkan -o /tmp/test_vk
+            -x c backends/sc_backend_vulkan.h -c -o /tmp/vk.o
+          clang -I include -I tools -I backends \
+            -DSC_GFX_BACKEND_VULKAN \
+            -DSC_TEST_BACKEND=SC_BACKEND_VULKAN \
+            -DSC_TEST_NO_IMPL \
+            -Wall -Wextra -Wpedantic -Wshadow \
+            -x c tests/test_gfx.c -c -o /tmp/test_gfx.o
+          clang /tmp/vk.o /tmp/test_gfx.o -lm -lvulkan -o /tmp/test_vk
           /tmp/test_vk
 
   test-asan:
@@ -95,7 +101,15 @@ jobs:
             -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
             -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
             -Wall -Wextra -Wpedantic -Wshadow \
-            -x objective-c backends/sc_backend_metal.h tests/test_gfx.c \
+            -x objective-c backends/sc_backend_metal.h -c -o /tmp/metal.o \
+            -fobjc-arc
+          clang -I include -I tools -I backends \
+            -DSC_GFX_BACKEND_METAL \
+            -DSC_TEST_BACKEND=SC_BACKEND_METAL \
+            -DSC_TEST_NO_IMPL \
+            -Wall -Wextra -Wpedantic -Wshadow \
+            -x c tests/test_gfx.c -c -o /tmp/test_gfx_metal.o
+          clang /tmp/metal.o /tmp/test_gfx_metal.o \
             -fobjc-arc -lm -framework Metal -framework MetalKit \
             -framework Cocoa -o /tmp/test_metal
           /tmp/test_metal
