@@ -8,7 +8,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build & test (software backend)
         run: |
-          for t in test_arena test_math test_layout test_gfx test_runtime test_font test_input bench_gfx; do
+          for t in test_arena test_math test_layout test_gfx test_runtime test_font test_input test_image bench_gfx fuzz_gfx; do
             clang -I include -I tools -Wall -Wextra -Wpedantic -Wshadow \
               tests/${t}.c -lm -o /tmp/$t && /tmp/$t
           done
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build & test with AddressSanitizer
         run: |
-          for t in test_arena test_math test_layout test_gfx test_runtime test_font test_input; do
+          for t in test_arena test_math test_layout test_gfx test_runtime test_font test_input test_image fuzz_gfx; do
             clang -I include -I tools -Wall -Wextra -Wpedantic -Wshadow \
               -fsanitize=address -fno-omit-frame-pointer \
               tests/${t}.c -lm -o /tmp/$t && /tmp/$t
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build & test with UndefinedBehaviorSanitizer
         run: |
-          for t in test_arena test_math test_layout test_gfx test_runtime test_font test_input; do
+          for t in test_arena test_math test_layout test_gfx test_runtime test_font test_input test_image fuzz_gfx; do
             clang -I include -I tools -Wall -Wextra -Wpedantic -Wshadow \
               -fsanitize=undefined -fno-sanitize-recover=undefined \
               tests/${t}.c -lm -o /tmp/$t && /tmp/$t
