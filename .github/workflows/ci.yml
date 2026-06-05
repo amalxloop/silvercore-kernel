@@ -45,6 +45,7 @@ jobs:
             -DSC_GFX_BACKEND_VULKAN -DSC_BACKEND_VULKAN_IMPLEMENTATION \
             -DSC_LAYOUT_IMPLEMENTATION -DSC_WIDGET_IMPLEMENTATION \
             -DSC_RUNTIME_IMPLEMENTATION -DSC_FONT_IMPLEMENTATION \
+            -DSC_TEST_BACKEND=SC_BACKEND_VULKAN \
             -Wall -Wextra -Wpedantic -Wshadow \
             -x c backends/sc_backend_vulkan.h tests/test_gfx.c \
             -lm -lvulkan -o /tmp/test_vk
@@ -103,9 +104,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mymindstorm/setup-emsdk@v14
+      - uses: emscripten-core/setup-emsdk@v15
         with:
-          version: 3.1.64
+          version: 4.0.7
       - name: Build WASM target
         run: |
           emcmake cmake -S . -B build-wasm -DWASM=ON -DSC_TESTS=OFF -DSC_SHARED=OFF

@@ -1,11 +1,25 @@
 /*
- * test_gfx.c  --  Unit tests for sc_gfx.h (software backend)
+ * test_gfx.c  --  Unit tests for sc_gfx.h
+ *
+ * By default tests the software backend.  Define SC_GFX_BACKEND_VULKAN
+ * (or METAL / D3D12) and pass -DSC_TEST_BACKEND=SC_BACKEND_VULKAN to
+ * run against a hardware backend.
  */
 #define SC_GFX_IMPLEMENTATION
 #define SC_LAYOUT_IMPLEMENTATION
 #define SC_WIDGET_IMPLEMENTATION
 #define SC_RUNTIME_IMPLEMENTATION
+#if !defined(SC_GFX_BACKEND_SOFTWARE) && \
+    !defined(SC_GFX_BACKEND_VULKAN) && \
+    !defined(SC_GFX_BACKEND_METAL) && \
+    !defined(SC_GFX_BACKEND_D3D12) && \
+    !defined(SC_GFX_BACKEND_WGPU)
 #define SC_GFX_BACKEND_SOFTWARE
+#endif
+
+#ifndef SC_TEST_BACKEND
+#define SC_TEST_BACKEND SC_BACKEND_SOFTWARE
+#endif
 
 #include "sc_gfx.h"
 #include <stdio.h>
@@ -16,20 +30,20 @@
 
 static int test_init_shutdown(void) {
     SCGfxDesc desc = {
-        .backend = SC_BACKEND_SOFTWARE,
+        .backend = SC_TEST_BACKEND,
         .width   = 320, .height = 240,
     };
     SCGfxContext *ctx = NULL;
     FAIL_UNLESS(sc_ok(sc_gfx_init(&desc, &ctx)), "gfx_init ok");
     FAIL_UNLESS(ctx != NULL, "ctx non-null");
-    FAIL_UNLESS(sc_gfx_active_backend(ctx) == SC_BACKEND_SOFTWARE, "backend sw");
+    FAIL_UNLESS(sc_gfx_active_backend(ctx) == SC_TEST_BACKEND, "backend sw");
     sc_gfx_shutdown(ctx);
     PASS("gfx_init_shutdown");
     return 0;
 }
 
 static int test_resources(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=64,.height=64};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -60,7 +74,7 @@ static int test_resources(void) {
 }
 
 static int test_frame_loop(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=128,.height=128};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=128,.height=128};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -99,7 +113,7 @@ static int test_set_rasterize_null(void) {
 
 static int test_init_zero_size(void) {
     /* width=0, height=0 should use defaults */
-    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 0, .height = 0};
+    SCGfxDesc desc = {.backend = SC_TEST_BACKEND, .width = 0, .height = 0};
     SCGfxContext *ctx = NULL;
     SCResult r = sc_gfx_init(&desc, &ctx);
     FAIL_UNLESS(r == SC_OK, "init zero size ok");
@@ -111,7 +125,7 @@ static int test_init_zero_size(void) {
 
 static int test_frame_stats_clean(void) {
     /* Frame stats should be zeroed after init and before any frame begins */
-    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 64, .height = 64};
+    SCGfxDesc desc = {.backend = SC_TEST_BACKEND, .width = 64, .height = 64};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
     SCGfxFrameStats s = sc_gfx_frame_stats(ctx);
@@ -125,7 +139,7 @@ static int test_frame_stats_clean(void) {
 
 static int test_destroy_invalid_handles(void) {
     /* Destroying invalid (id=0) handles must not crash */
-    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 32, .height = 32};
+    SCGfxDesc desc = {.backend = SC_TEST_BACKEND, .width = 32, .height = 32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -145,7 +159,7 @@ static int test_destroy_invalid_handles(void) {
 }
 
 static int test_init_shutdown_no_resources(void) {
-    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 64, .height = 64};
+    SCGfxDesc desc = {.backend = SC_TEST_BACKEND, .width = 64, .height = 64};
     SCGfxContext *ctx = NULL;
     FAIL_UNLESS(sc_ok(sc_gfx_init(&desc, &ctx)), "init ok");
     sc_gfx_shutdown(ctx);
@@ -156,7 +170,7 @@ static int test_init_shutdown_no_resources(void) {
 /* ===== Buffer / shader / pipeline tests for resource management ========== */
 
 static int test_buffer_data_persist(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=64,.height=64};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -186,7 +200,7 @@ static int test_buffer_data_persist(void) {
 }
 
 static int test_buffer_update(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=64,.height=64};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -205,7 +219,7 @@ static int test_buffer_update(void) {
 }
 
 static int test_buffer_null_desc(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -220,7 +234,7 @@ static int test_buffer_null_desc(void) {
 }
 
 static int test_shader_pipeline_create(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -240,7 +254,7 @@ static int test_shader_pipeline_create(void) {
 }
 
 static int test_shader_pipeline_null_desc(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -261,7 +275,7 @@ static int test_shader_pipeline_null_desc(void) {
 /* ===== Submit command tests ============================================== */
 
 static int test_submit_user_vertex_buffer(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=128,.height=128};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=128,.height=128};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -292,7 +306,7 @@ static int test_submit_user_vertex_buffer(void) {
 }
 
 static int test_submit_index_buffer(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=128,.height=128};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=128,.height=128};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -335,7 +349,7 @@ static int test_submit_index_buffer(void) {
 }
 
 static int test_submit_with_texture(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=64,.height=64};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -368,7 +382,7 @@ static int test_submit_with_texture(void) {
 }
 
 static int test_submit_multiple_cmds(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=64,.height=64};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=64,.height=64};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -399,7 +413,7 @@ static int test_submit_multiple_cmds(void) {
 }
 
 static int test_submit_retained_across_frames(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -426,7 +440,7 @@ static int test_submit_retained_across_frames(void) {
 }
 
 static int test_multiple_buffers_and_clear(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -450,7 +464,7 @@ static int test_multiple_buffers_and_clear(void) {
 /* ===== Depth/stencil tests ================================================ */
 
 static int test_depth_pipeline_create(void) {
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -477,7 +491,7 @@ static int test_depth_pipeline_create(void) {
 static int test_depth_submit_discard(void) {
     /* Two overlapping triangles at different depths; the farther one
        should be discarded by depth testing. */
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=32,.height=32};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=32,.height=32};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -523,7 +537,7 @@ static int test_depth_submit_discard(void) {
 static int test_depth_no_write(void) {
     /* depth_test=true, depth_write=false — reads depth but doesn't write.
        A second drawn triangle at same depth should pass. */
-    SCGfxDesc desc = {.backend=SC_BACKEND_SOFTWARE,.width=16,.height=16};
+    SCGfxDesc desc = {.backend=SC_TEST_BACKEND,.width=16,.height=16};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
 
@@ -565,7 +579,7 @@ static int test_lock_unlock_null(void) {
 }
 
 static int test_thread_safe_init(void) {
-    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 32, .height = 32,
+    SCGfxDesc desc = {.backend = SC_TEST_BACKEND, .width = 32, .height = 32,
                        .thread_safe = true};
     SCGfxContext *ctx = NULL;
     FAIL_UNLESS(sc_ok(sc_gfx_init(&desc, &ctx)), "thread_safe init ok");
@@ -583,7 +597,7 @@ static int test_thread_safe_init(void) {
 /* ===== Resize test ======================================================== */
 
 static int test_resize_software(void) {
-    SCGfxDesc desc = {.backend = SC_BACKEND_SOFTWARE, .width = 16, .height = 16};
+    SCGfxDesc desc = {.backend = SC_TEST_BACKEND, .width = 16, .height = 16};
     SCGfxContext *ctx = NULL;
     sc_gfx_init(&desc, &ctx);
     FAIL_UNLESS(ctx != NULL, "resize ctx");
