@@ -31,6 +31,7 @@
  *       stock_dashboard.c -o stock_dashboard -lm
  */
 
+#ifndef SC_NO_IMPLEMENTATION
 #ifndef SC_GFX_IMPLEMENTATION
 #define SC_GFX_IMPLEMENTATION
 #endif
@@ -49,6 +50,7 @@
 #ifndef SC_GFX_BACKEND_SOFTWARE
 #define SC_GFX_BACKEND_SOFTWARE
 #endif
+#endif /* SC_NO_IMPLEMENTATION */
 
 #include "../../include/sc_types.h"
 #include "../../include/sc_math.h"
