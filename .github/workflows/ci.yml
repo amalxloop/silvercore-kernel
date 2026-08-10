@@ -128,37 +128,56 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const sanitize = (s) => String(s).replace(/[^\x20-\x7E\n\r\t]/g, '?');
             let body = '';
-            try { body += fs.readFileSync('/tmp/mtl_out.txt', 'utf8'); } catch (e) {}
+            try { body += sanitize(fs.readFileSync('/tmp/mtl_out.txt', 'utf8')); } catch (e) { body += '[no mtl_out.txt]'; }
             try {
               const dir = '/Users/runner/Library/Logs/DiagnosticReports';
               for (const f of fs.readdirSync(dir)) {
                 if (f.includes('test_metal') || f.includes('test_gfx')) {
-                  body += '\n\n=== ' + f + ' ===\n' + fs.readFileSync(dir + '/' + f, 'utf8');
+                  body += '\n\n=== ' + sanitize(f) + ' ===\n' +
+                    sanitize(fs.readFileSync(dir + '/' + f, 'utf8').slice(0, 4000));
                 }
               }
             } catch (e) {}
-            const msg = (body.slice(0, 60000) || 'no crash output captured')
-              .replace(/\0/g, '');
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'metal-crash-detail',
-              head_sha: context.sha,
-              status: 'completed',
-              conclusion: 'neutral',
-              output: {
-                title: 'Metal test crash detail',
-                summary: 'stdout/stderr + macOS crash report',
-                annotations: [{
-                  path: 'backends/sc_backend_metal.h',
-                  start_line: 1,
-                  end_line: 1,
-                  annotation_level: 'warning',
-                  message: msg
-                }]
-              }
-            });
+            const msg = (body.slice(0, 60000) || 'no crash output captured');
+            try {
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'metal-crash-detail',
+                head_sha: context.sha,
+                status: 'completed',
+                conclusion: 'neutral',
+                output: {
+                  title: 'Metal test crash detail',
+                  summary: msg.slice(0, 1000),
+                  annotations: [{
+                    path: 'backends/sc_backend_metal.h',
+                    start_line: 1,
+                    end_line: 1,
+                    annotation_level: 'warning',
+                    message: msg
+                  }]
+                }
+              });
+            } catch (e) { console.log('annotation create failed:', e.message); }
+      - name: Push crash dump to ci-crash-debug branch
+        if: failure()
+        run: |
+          mkdir -p /tmp/crashdump
+          cp /tmp/mtl_out.txt /tmp/crashdump/mtl_out.txt 2>/dev/null || true
+          cp /Users/runner/Library/Logs/DiagnosticReports/*test_metal* /tmp/crashdump/ 2>/dev/null || true
+          cp /Users/runner/Library/Logs/DiagnosticReports/*test_gfx* /tmp/crashdump/ 2>/dev/null || true
+          ls -la /tmp/crashdump
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "ci"
+          git config user.email "ci@ci"
+          git checkout -B ci-crash-debug
+          cp /tmp/crashdump/* .
+          git add -A
+          git commit -m "ci crash dump $(date +%s)" || true
+          git push origin ci-crash-debug --force || echo "PUSH FAILED"
 
   wasm:
     runs-on: ubuntu-latest
