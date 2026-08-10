@@ -80,6 +80,10 @@ typedef struct {
     /* Offscreen (headless) */
     id<MTLTexture>        os_tex;
 
+    /* Default white 1x1 texture (always bound so the built-in fragment
+       shader never samples an unbound texture) */
+    id<MTLTexture>        white_tex;
+
     /* Extent */
     u32                   width, height;
     bool                  headless;
@@ -143,13 +147,12 @@ SCResult sc_metal_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     NSString *lib_src =
         @"#include <metal_stdlib>\n"
          "using namespace metal;\n"
+         "struct VIn { float2 pos; float2 uv; uchar4 col; };\n"
          "struct VOut { float4 pos [[position]]; float2 uv; float4 col; };\n"
          "vertex VOut vs_main(uint vid [[vertex_id]],\n"
-         "  constant float2 *pos [[buffer(0)]],\n"
-         "  constant float2 *uv  [[buffer(1)]],\n"
-         "  constant uchar4 *col [[buffer(2)]]) {\n"
-         "  VOut o; o.pos = float4(pos[vid], 0, 1);\n"
-         "  o.uv = uv[vid]; o.col = float4(col[vid]) / 255.0;\n"
+         "  constant VIn *v [[buffer(0)]]) {\n"
+         "  VOut o; o.pos = float4(v[vid].pos, 0, 1);\n"
+         "  o.uv = v[vid].uv; o.col = float4(v[vid].col) / 255.0;\n"
          "  return o;\n"
          "}\n"
          "fragment float4 fs_main(VOut in [[stage_in]],\n"
@@ -216,6 +219,21 @@ SCResult sc_metal_init(SCGfxContext *ctx, const SCGfxDesc *desc,
         if (!s->os_tex) { sc_metal_shutdown(ctx); return SC_ERR_GFX; }
     }
 
+    /* Default white 1x1 texture — the built-in fragment shader samples
+       texture(0), so a valid texture must be bound on every draw. */
+    {
+        MTLTextureDescriptor *wtd = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+            width:1 height:1 mipmapped:NO];
+        wtd.usage = MTLTextureUsageShaderRead;
+        s->white_tex = [s->device newTextureWithDescriptor:wtd];
+        if (s->white_tex) {
+            static const u8 px[4] = {255,255,255,255};
+            MTLRegion wr = {{0,0,0},{1,1,1}};
+            [s->white_tex replaceRegion:wr mipmapLevel:0 withBytes:px bytesPerRow:4];
+        }
+    }
+
     /* Per-frame semaphores */
     for (u32 i = 0; i < SC_MTL_FRAME_OVERLAP; i++) {
         s->frames[i].frame_sem = dispatch_semaphore_create(1);
@@ -249,6 +267,7 @@ void sc_metal_shutdown(SCGfxContext *ctx) {
     for (u32 i = 0; i < SC_GFX_MAX_BUFFERS; i++) s->buf_buffers[i] = nil;
 
     s->os_tex    = nil;
+    s->white_tex = nil;
     s->pipeline  = nil;
     s->depth_state = nil;
     s->library   = nil;
@@ -328,11 +347,14 @@ void sc_metal_end_frame(SCGfxContext *ctx) {
 
             for (u32 i = 0; i < ctx->batch_ccount; i++) {
                 u32 tex_id = ctx->batch_cmds[i].texture.id;
-                f32 ht = (tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES &&
-                          s->tex_textures[tex_id]) ? 1.0f : 0.0f;
+                bool has_tex = tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES &&
+                               s->tex_textures[tex_id];
+                f32 ht = has_tex ? 1.0f : 0.0f;
                 [enc setFragmentBytes:&ht length:sizeof(f32) atIndex:0];
-                if (ht > 0.5f)
-                    [enc setFragmentTexture:s->tex_textures[tex_id] atIndex:0];
+                /* The fragment shader always samples texture(0); bind the
+                   white texture when the draw has none so validation passes. */
+                [enc setFragmentTexture:has_tex ? s->tex_textures[tex_id] : s->white_tex
+                               atIndex:0];
                 [enc drawPrimitives:MTLPrimitiveTypeTriangle
                        vertexStart:ctx->batch_cmds[i].vertex_offset
                        vertexCount:ctx->batch_cmds[i].vertex_count];
@@ -359,11 +381,12 @@ void sc_metal_end_frame(SCGfxContext *ctx) {
             [enc setVertexBuffer:s->buf_buffers[vb_id] offset:0 atIndex:0];
 
             u32 tex_id = cmd->texture.id;
-            f32 ht = (tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES &&
-                      s->tex_textures[tex_id]) ? 1.0f : 0.0f;
+            bool has_tex = tex_id > 0 && tex_id < SC_GFX_MAX_TEXTURES &&
+                           s->tex_textures[tex_id];
+            f32 ht = has_tex ? 1.0f : 0.0f;
             [enc setFragmentBytes:&ht length:sizeof(f32) atIndex:0];
-            if (ht > 0.5f)
-                [enc setFragmentTexture:s->tex_textures[tex_id] atIndex:0];
+            [enc setFragmentTexture:has_tex ? s->tex_textures[tex_id] : s->white_tex
+                           atIndex:0];
 
             u32 ib_id = cmd->index_buf.id;
             if (ib_id > 0 && ib_id < SC_GFX_MAX_BUFFERS && s->buf_buffers[ib_id]) {
