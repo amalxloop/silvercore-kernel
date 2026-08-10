@@ -147,7 +147,7 @@ SCResult sc_metal_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     NSString *lib_src =
         @"#include <metal_stdlib>\n"
          "using namespace metal;\n"
-         "struct VIn { float2 pos; float2 uv; uchar4 col; };\n"
+         "struct VIn [[packed]] { float2 pos; float2 uv; uchar4 col; };\n"
          "struct VOut { float4 pos [[position]]; float2 uv; float4 col; };\n"
          "vertex VOut vs_main(uint vid [[vertex_id]],\n"
          "  constant VIn *v [[buffer(0)]]) {\n"

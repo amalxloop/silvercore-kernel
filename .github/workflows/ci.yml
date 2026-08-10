@@ -112,7 +112,16 @@ jobs:
           clang /tmp/metal.o /tmp/test_gfx_metal.o \
             -fobjc-arc -lm -framework Metal -framework MetalKit \
             -framework Cocoa -o /tmp/test_metal
-          /tmp/test_metal
+          /tmp/test_metal > /tmp/mtl_out.txt 2>&1 || { ec=$?; echo "exit=$ec" >> /tmp/mtl_out.txt; exit $ec; }
+      - name: Upload Metal debug logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-debug
+          path: |
+            /tmp/mtl_out.txt
+            ${{ runner.os == 'macOS' && '~/Library/Logs/DiagnosticReports' || '' }}
+        if-no-files-found: ignore
 
   wasm:
     runs-on: ubuntu-latest
