@@ -110,7 +110,10 @@ set(KERNEL_SOURCES ${CMAKE_SOURCE_DIR}/src/sc_kernel.c)
 # ---------------------------------------------------------------------------
 # Static library
 add_library(sc_kernel_static STATIC ${KERNEL_SOURCES})
-target_include_directories(sc_kernel_static PUBLIC ${CMAKE_SOURCE_DIR}/include ${SC_GFX_INCLUDES})
+target_include_directories(sc_kernel_static PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include/silvercore>
+    ${SC_GFX_INCLUDES})
 target_compile_definitions(sc_kernel_static PUBLIC ${SC_GFX_BACKEND_DEF})
 target_link_libraries(sc_kernel_static PRIVATE ${SC_GFX_LIBS})
 set_target_properties(sc_kernel_static PROPERTIES OUTPUT_NAME "sc_kernel")
@@ -119,7 +122,10 @@ set_target_properties(sc_kernel_static PROPERTIES OUTPUT_NAME "sc_kernel")
 # Shared library (for Python ctypes bindings)
 if(SC_SHARED)
     add_library(sc_kernel SHARED ${KERNEL_SOURCES})
-    target_include_directories(sc_kernel PUBLIC ${CMAKE_SOURCE_DIR}/include ${SC_GFX_INCLUDES})
+    target_include_directories(sc_kernel PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include/silvercore>
+        ${SC_GFX_INCLUDES})
     target_compile_definitions(sc_kernel PUBLIC ${SC_GFX_BACKEND_DEF})
     target_link_libraries(sc_kernel PRIVATE m ${SC_GFX_LIBS})
     # Export all public symbols (clang / gcc default behaviour for shared libs)

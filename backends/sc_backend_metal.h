@@ -401,22 +401,22 @@ SCGfxBuffer sc_metal_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc)
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
     /* NULL desc === valid empty buffer slot */
-    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
-    if (id == 0) return h;
-    h.id = id;
+    u32 sid = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
+    if (sid == 0) return h;
+    h.id = sid;
     if (!desc) return h;
 
     if (desc->data && desc->size > 0) {
         MTLResourceOptions opts = MTLResourceStorageModeShared;
-        s->buf_buffers[id] = [s->device newBufferWithBytes:desc->data
-                                                     length:desc->size
-                                                    options:opts];
+        s->buf_buffers[sid] = [s->device newBufferWithBytes:desc->data
+                                                      length:desc->size
+                                                     options:opts];
     } else {
-        s->buf_buffers[id] = [s->device newBufferWithLength:desc->size ? desc->size : 1
-                                                     options:MTLResourceStorageModeShared];
+        s->buf_buffers[sid] = [s->device newBufferWithLength:desc->size ? desc->size : 1
+                                                      options:MTLResourceStorageModeShared];
     }
-    if (!s->buf_buffers[id]) {
-        _sc_gfx_free_slot(ctx->buf_slots, id, &ctx->buf_free_head);
+    if (!s->buf_buffers[sid]) {
+        _sc_gfx_free_slot(ctx->buf_slots, sid, &ctx->buf_free_head);
         h.id = 0;
     }
     return h;
@@ -451,12 +451,12 @@ SCGfxTexture sc_metal_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *de
     if (!ctx || !ctx->backend_data || !desc) return h;
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
-    u32 id = 0;
+    u32 sid = 0;
     for (u32 i = 1; i < SC_GFX_MAX_TEXTURES; i++) {
-        if (!s->tex_textures[i]) { id = i; break; }
+        if (!s->tex_textures[i]) { sid = i; break; }
     }
-    if (id == 0) return h;
-    h.id = id;
+    if (sid == 0) return h;
+    h.id = sid;
 
     MTLPixelFormat pf = MTLPixelFormatRGBA8Unorm;
     if (desc->fmt == SC_PIXFMT_R8) pf = MTLPixelFormatR8Unorm;
@@ -471,12 +471,12 @@ SCGfxTexture sc_metal_make_texture(SCGfxContext *ctx, const SCGfxTextureDesc *de
         id<MTLTexture> tex = [s->device newTextureWithDescriptor:td];
         [tex replaceRegion:region mipmapLevel:0 withBytes:desc->data
                bytesPerRow:desc->width * 4];
-        s->tex_textures[id] = tex;
+        s->tex_textures[sid] = tex;
     } else {
-        s->tex_textures[id] = [s->device newTextureWithDescriptor:td];
+        s->tex_textures[sid] = [s->device newTextureWithDescriptor:td];
     }
 
-    if (!s->tex_textures[id]) h.id = 0;
+    if (!s->tex_textures[sid]) h.id = 0;
     return h;
 }
 
@@ -496,15 +496,15 @@ SCGfxShader sc_metal_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc)
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
     /* NULL desc === valid empty shader slot */
-    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
-    if (id == 0) return h;
-    h.id = id;
+    u32 sid = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
+    if (sid == 0) return h;
+    h.id = sid;
     if (!desc) return h;
 
     if (desc->vs_source)
-        s->shd_vs[id] = _sc_mtl_make_shader(s->device, desc->vs_source, "vs_main");
+        s->shd_vs[sid] = _sc_mtl_make_shader(s->device, desc->vs_source, "vs_main");
     if (desc->fs_source)
-        s->shd_fs[id] = _sc_mtl_make_shader(s->device, desc->fs_source, "fs_main");
+        s->shd_fs[sid] = _sc_mtl_make_shader(s->device, desc->fs_source, "fs_main");
     return h;
 }
 
@@ -526,9 +526,9 @@ SCGfxPipeline sc_metal_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc 
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
     /* NULL desc === valid empty pipeline slot */
-    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
-    if (id == 0) return h;
-    h.id = id;
+    u32 sid = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
+    if (sid == 0) return h;
+    h.id = sid;
     if (!desc) return h;
 
     u32 shd_id = desc->shader.id;
@@ -551,14 +551,14 @@ SCGfxPipeline sc_metal_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc 
     NSError *err = nil;
     id<MTLRenderPipelineState> pip =
         [s->device newRenderPipelineStateWithDescriptor:rpd error:&err];
-    if (pip) s->user_pipelines[id] = pip;
+    if (pip) s->user_pipelines[sid] = pip;
 
     /* Depth/stencil state */
     MTLDepthStencilDescriptor *dsd = [MTLDepthStencilDescriptor new];
     dsd.depthCompareFunction = desc->depth.depth_test
         ? (MTLCompareFunction)desc->depth.depth_compare : MTLCompareFunctionAlways;
     dsd.depthWriteEnabled = desc->depth.depth_write ? YES : NO;
-    s->user_depth_states[id] = [s->device newDepthStencilStateWithDescriptor:dsd];
+    s->user_depth_states[sid] = [s->device newDepthStencilStateWithDescriptor:dsd];
 
     return h;
 }
