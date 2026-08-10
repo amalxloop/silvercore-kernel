@@ -100,6 +100,13 @@ typedef struct {
     id<MTLFunction>       shd_fs[SC_GFX_MAX_SHADERS];
     id<MTLRenderPipelineState> user_pipelines[SC_GFX_MAX_PIPELINES];
     id<MTLDepthStencilState>   user_depth_states[SC_GFX_MAX_PIPELINES];
+
+    /* Built-in vertex/fragment functions — used as a fallback when a user
+       pipeline references a missing or failed-to-compile shader, since
+       Metal asserts (SIGABRT) on a nil vertexFunction in
+       newRenderPipelineStateWithDescriptor:. */
+    id<MTLFunction>       builtin_vs;
+    id<MTLFunction>       builtin_fs;
 } _SCMtlState;
 
 /* -------------------------------------------------------------------------
@@ -175,6 +182,8 @@ SCResult sc_metal_init(SCGfxContext *ctx, const SCGfxDesc *desc,
     id<MTLFunction> vs = [s->library newFunctionWithName:@"vs_main"];
     id<MTLFunction> fs = [s->library newFunctionWithName:@"fs_main"];
     if (!vs || !fs) { sc_metal_shutdown(ctx); return SC_ERR_GFX; }
+    s->builtin_vs = vs;
+    s->builtin_fs = fs;
 
     /* Build render pipeline state */
     MTLRenderPipelineDescriptor *rpd = [MTLRenderPipelineDescriptor new];
@@ -268,6 +277,8 @@ void sc_metal_shutdown(SCGfxContext *ctx) {
 
     s->os_tex    = nil;
     s->white_tex = nil;
+    s->builtin_vs = nil;
+    s->builtin_fs = nil;
     s->pipeline  = nil;
     s->depth_state = nil;
     s->library   = nil;
@@ -555,10 +566,15 @@ SCGfxPipeline sc_metal_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc 
     if (!desc) return h;
 
     u32 shd_id = desc->shader.id;
-    id<MTLFunction> vs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_vs[shd_id])
+    id<MTLFunction> vs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS)
                           ? s->shd_vs[shd_id] : nil;
-    id<MTLFunction> fs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_fs[shd_id])
+    id<MTLFunction> fs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS)
                           ? s->shd_fs[shd_id] : nil;
+    /* Metal asserts when a pipeline descriptor has a nil vertexFunction
+       ("vertexFunction must not be nil"). Fall back to the built-in
+       shaders when the user shader is missing or failed to compile. */
+    if (!vs) vs = s->builtin_vs;
+    if (!fs) fs = s->builtin_fs;
 
     MTLRenderPipelineDescriptor *rpd = [MTLRenderPipelineDescriptor new];
     rpd.vertexFunction   = vs;
