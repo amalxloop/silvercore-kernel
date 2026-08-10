@@ -169,13 +169,11 @@ jobs:
           emit() {
             local f="$1" tag="$2"
             if [ ! -s "$f" ]; then echo "::error title=metal $tag::(no file $f)"; return; fi
-            echo "::error title=metal $tag: $(head -c 200 "$f")::"
-            head -c 80000 "$f" | fold -s -w 220 | while IFS= read -r line; do
-              printf '%s\n' "$line" | sed 's/%/%25/g' | sed 's/\r/%0D/g'
-              printf '::error::%s\n' "$(printf '%s\n' "$line" | sed 's/%/%25/g' | sed 's/\r/%0D/g')"
-            done
+            local esc
+            esc=$(perl -0777 -pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g' "$f" | head -c 60000)
+            printf '::error title=metal %s::%s\n' "$tag" "$esc"
           }
-          emit /tmp/mtl_out.txt "stdout"
+          emit /tmp/mtl_out.txt "full-output"
           for f in /Users/runner/Library/Logs/DiagnosticReports/*test_metal* /Users/runner/Library/Logs/DiagnosticReports/*test_gfx*; do
             [ -f "$f" ] && emit "$f" "crash-report"
           done
