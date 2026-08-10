@@ -589,6 +589,7 @@ static void _sc_gfx_free_slot(_SCSlot *slots, u32 id, u32 *head) {
 /* ---- Core API --------------------------------------------------------- */
 
 SCResult sc_gfx_init(const SCGfxDesc *desc, SCGfxContext **out_ctx) {
+    if (out_ctx) *out_ctx = NULL;
     SCGfxContext *ctx = (SCGfxContext*)calloc(1, sizeof(SCGfxContext));
     if (!ctx) return SC_ERR_OOM;
     ctx->width        = desc->width  ? desc->width  : 1280;
