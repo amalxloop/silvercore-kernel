@@ -1130,6 +1130,7 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
 
     /* ---- Format ------------------------------------------------------- */
     VkFormat fmt = VK_FORMAT_B8G8R8A8_UNORM;
+    s->swap_fmt = fmt;
 
     /* ---- Render pass -------------------------------------------------- */
     r = _sc_vk_create_rp(s->device, fmt, s->samples, &s->render_pass, !s->headless);
@@ -1211,6 +1212,61 @@ SCResult sc_vulkan_init(SCGfxContext *ctx, const SCGfxDesc *desc,
 
     r = _sc_vk_alloc_desc_set(s->device, s->desc_pool, s->ds_layout, &s->desc_set);
     if (r != VK_SUCCESS) { sc_vulkan_shutdown(ctx); return SC_ERR_GFX; }
+
+    /* ---- Default white 1x1 texture (slot 0) --------------------------- */
+    /* The built-in pipeline statically samples set #0, so the descriptor
+       set must always point at a live image.  Slot 0 is reserved for a
+       solid-white texture that is used whenever a draw has no texture. */
+    {
+        VkImageCreateInfo ici = {0};
+        ici.sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format    = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent    = (VkExtent3D){1, 1, 1};
+        ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.samples   = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling    = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage     = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        r = vkCreateImage(s->device, &ici, NULL, &s->tex_images[0]);
+        if (r == VK_SUCCESS) {
+            VkMemoryRequirements mr;
+            vkGetImageMemoryRequirements(s->device, s->tex_images[0], &mr);
+            VkMemoryAllocateInfo ai = {0};
+            ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            ai.allocationSize = mr.size;
+            ai.memoryTypeIndex = _sc_vk_find_mem_type(s->phy_dev, mr.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            r = vkAllocateMemory(s->device, &ai, NULL, &s->tex_mems[0]);
+            if (r == VK_SUCCESS) {
+                vkBindImageMemory(s->device, s->tex_images[0], s->tex_mems[0], 0);
+                r = _sc_vk_make_view(s->device, s->tex_images[0],
+                    VK_FORMAT_R8G8B8A8_UNORM, &s->tex_views[0]);
+                if (r == VK_SUCCESS) {
+                    static const u8 white_px[4] = {255, 255, 255, 255};
+                    _sc_vk_upload_tex_data(s->device, s->phy_dev, s->gfx_queue,
+                        s->cmd_pool, s->tex_images[0], 1, 1, 4, white_px);
+                }
+            }
+        }
+    }
+
+    /* Point the shared descriptor set at the white texture by default so a
+       draw with no texture still has a valid combined-image-sampler. */
+    {
+        VkDescriptorImageInfo dii = {0};
+        dii.sampler     = s->sampler;
+        dii.imageView   = s->tex_views[0];
+        dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w = {0};
+        w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet          = s->desc_set;
+        w.dstBinding      = 0;
+        w.descriptorCount = 1;
+        w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo      = &dii;
+        vkUpdateDescriptorSets(s->device, 1, &w, 0, NULL);
+    }
 
     /* ---- Per-frame resources ------------------------------------------ */
     for (u32 i = 0; i < SC_VK_FRAME_OVERLAP; i++) {
@@ -1389,13 +1445,14 @@ void sc_vulkan_begin_frame(SCGfxContext *ctx, SCColor clear) {
  * ---------------------------------------------------------------------- */
 SCGfxBuffer sc_vulkan_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
     SCGfxBuffer h = {0};
-    if (!ctx || !ctx->backend_data || !desc) return h;
+    if (!ctx || !ctx->backend_data) return h;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
-    if (!desc->data || desc->size == 0) return h;
 
+    /* NULL desc or empty desc === allocate a valid empty slot (no data) */
     u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
     if (id == 0) return h;
     h.id = id;
+    if (!desc || !desc->data || desc->size == 0) return h;
 
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (desc->type == SC_BUFFER_INDEX)
@@ -1437,13 +1494,24 @@ void sc_vulkan_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
         s->buf_mems[buf.id] = VK_NULL_HANDLE;
     }
     s->buf_sizes[buf.id] = 0;
+    _sc_gfx_free_slot(ctx->buf_slots, buf.id, &ctx->buf_free_head);
 }
 
 void sc_vulkan_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
                               const void *data, usize size) {
     if (!ctx || !ctx->backend_data || buf.id == 0 || !data) return;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
-    sc_vulkan_destroy_buffer(ctx, buf);
+    /* Tear down the old VkBuffer/memory but KEEP the slot (handle stays valid). */
+    if (s->buf_buffers[buf.id]) {
+        vkDeviceWaitIdle(s->device);
+        vkDestroyBuffer(s->device, s->buf_buffers[buf.id], NULL);
+        s->buf_buffers[buf.id] = VK_NULL_HANDLE;
+    }
+    if (s->buf_mems[buf.id]) {
+        vkFreeMemory(s->device, s->buf_mems[buf.id], NULL);
+        s->buf_mems[buf.id] = VK_NULL_HANDLE;
+    }
+    s->buf_sizes[buf.id] = 0;
     if (size == 0) return;
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     VkResult r = _sc_vk_create_buf(s->device, s->phy_dev, size, usage,
@@ -1460,12 +1528,14 @@ void sc_vulkan_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
  * ---------------------------------------------------------------------- */
 SCGfxShader sc_vulkan_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
     SCGfxShader h = {0};
-    if (!ctx || !ctx->backend_data || !desc) return h;
+    if (!ctx || !ctx->backend_data) return h;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
 
+    /* NULL desc === valid empty shader slot */
     u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
     if (id == 0) return h;
     h.id = id;
+    if (!desc) return h;
 
     if (desc->vs_bytecode && desc->vs_bytecode_size > 0) {
         _sc_vk_make_shader(s->device, (const unsigned char*)desc->vs_bytecode,
@@ -1490,6 +1560,7 @@ void sc_vulkan_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
         vkDestroyShaderModule(s->device, s->shd_fs_modules[shd.id], NULL);
         s->shd_fs_modules[shd.id] = VK_NULL_HANDLE;
     }
+    _sc_gfx_free_slot(ctx->shd_slots, shd.id, &ctx->shd_free_head);
 }
 
 /* -------------------------------------------------------------------------
@@ -1531,8 +1602,16 @@ static bool _sc_vk_pip_is_cached(_SCVkState *s, VkPipeline pip) {
  * ---------------------------------------------------------------------- */
 SCGfxPipeline sc_vulkan_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
     SCGfxPipeline h = {0};
-    if (!ctx || !ctx->backend_data || !desc) return h;
+    if (!ctx || !ctx->backend_data) return h;
     _SCVkState *s = (_SCVkState*)ctx->backend_data;
+
+    /* NULL desc === valid empty pipeline slot */
+    if (!desc) {
+        u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
+        if (id == 0) return h;
+        h.id = id;
+        return h;
+    }
 
     /* Hash the desc and check cache */
     u64 hash = _sc_vk_hash_pip_desc(desc);
@@ -1612,6 +1691,7 @@ void sc_vulkan_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
     }
     s->user_pipelines[pip.id]  = VK_NULL_HANDLE;
     s->user_pip_layouts[pip.id] = VK_NULL_HANDLE;
+    _sc_gfx_free_slot(ctx->pip_slots, pip.id, &ctx->pip_free_head);
 }
 
 void sc_vulkan_submit(SCGfxContext *ctx, const SCGfxDrawCmd *cmds, u32 count) {
@@ -1647,6 +1727,11 @@ void sc_vulkan_end_frame(SCGfxContext *ctx) {
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cb, 0, 1, &f->vert_buf, &offset);
+
+        /* The built-in pipeline statically uses descriptor set #0, so it
+           must be bound unconditionally (white texture = solid color). */
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            s->pipeline_layout, 0, 1, &s->desc_set, 0, NULL);
 
         for (u32 i = 0; i < ctx->batch_ccount; i++) {
             u32 tex_id = ctx->batch_cmds[i].texture.id;

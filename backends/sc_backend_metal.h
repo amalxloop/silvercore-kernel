@@ -46,6 +46,7 @@ SCResult      sc_metal_resize         (SCGfxContext *ctx, u32 width, u32 height)
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -380,7 +381,7 @@ void sc_metal_end_frame(SCGfxContext *ctx) {
         }
 
         [enc endEncoding];
-        [f->cmd_buf presentDrawable:s->drawable];
+        if (s->drawable) [f->cmd_buf presentDrawable:s->drawable];
         [f->cmd_buf addCompletedHandler:^(id<MTLCommandBuffer>) {
             dispatch_semaphore_signal(f->frame_sem);
         }];
@@ -396,12 +397,14 @@ void sc_metal_end_frame(SCGfxContext *ctx) {
  * ---------------------------------------------------------------------- */
 SCGfxBuffer sc_metal_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
     SCGfxBuffer h = {0};
-    if (!ctx || !ctx->backend_data || !desc) return h;
+    if (!ctx || !ctx->backend_data) return h;
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
+    /* NULL desc === valid empty buffer slot */
     u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
     if (id == 0) return h;
     h.id = id;
+    if (!desc) return h;
 
     if (desc->data && desc->size > 0) {
         MTLResourceOptions opts = MTLResourceStorageModeShared;
@@ -424,6 +427,7 @@ void sc_metal_destroy_buffer(SCGfxContext *ctx, SCGfxBuffer buf) {
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
     if (buf.id >= SC_GFX_MAX_BUFFERS) return;
     s->buf_buffers[buf.id] = nil;
+    _sc_gfx_free_slot(ctx->buf_slots, buf.id, &ctx->buf_free_head);
 }
 
 void sc_metal_update_buffer(SCGfxContext *ctx, SCGfxBuffer buf,
@@ -488,12 +492,14 @@ void sc_metal_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
  * ---------------------------------------------------------------------- */
 SCGfxShader sc_metal_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
     SCGfxShader h = {0};
-    if (!ctx || !ctx->backend_data || !desc) return h;
+    if (!ctx || !ctx->backend_data) return h;
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
+    /* NULL desc === valid empty shader slot */
     u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
     if (id == 0) return h;
     h.id = id;
+    if (!desc) return h;
 
     if (desc->vs_source)
         s->shd_vs[id] = _sc_mtl_make_shader(s->device, desc->vs_source, "vs_main");
@@ -508,6 +514,7 @@ void sc_metal_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
     if (shd.id >= SC_GFX_MAX_SHADERS) return;
     s->shd_vs[shd.id] = nil;
     s->shd_fs[shd.id] = nil;
+    _sc_gfx_free_slot(ctx->shd_slots, shd.id, &ctx->shd_free_head);
 }
 
 /* -------------------------------------------------------------------------
@@ -515,12 +522,14 @@ void sc_metal_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
  * ---------------------------------------------------------------------- */
 SCGfxPipeline sc_metal_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
     SCGfxPipeline h = {0};
-    if (!ctx || !ctx->backend_data || !desc) return h;
+    if (!ctx || !ctx->backend_data) return h;
     _SCMtlState *s = (_SCMtlState*)ctx->backend_data;
 
+    /* NULL desc === valid empty pipeline slot */
     u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
     if (id == 0) return h;
     h.id = id;
+    if (!desc) return h;
 
     u32 shd_id = desc->shader.id;
     id<MTLFunction> vs = (shd_id > 0 && shd_id < SC_GFX_MAX_SHADERS && s->shd_vs[shd_id])
@@ -560,6 +569,7 @@ void sc_metal_destroy_pipeline(SCGfxContext *ctx, SCGfxPipeline pip) {
     if (pip.id >= SC_GFX_MAX_PIPELINES) return;
     s->user_pipelines[pip.id] = nil;
     s->user_depth_states[pip.id] = nil;
+    _sc_gfx_free_slot(ctx->pip_slots, pip.id, &ctx->pip_free_head);
 }
 
 SCResult sc_metal_resize(SCGfxContext *ctx, u32 width, u32 height) {

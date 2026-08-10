@@ -464,39 +464,7 @@ typedef struct {
     SCBufferType type;
 } _SCBufData;
 
-/* -------------------------------------------------------------------------
- * Implementation (software rasteriser only – other backends link separately)
- * ---------------------------------------------------------------------- */
-#ifdef SC_GFX_IMPLEMENTATION
-
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
-
-/* ---- Platform mutex abstraction (used when thread_safe is true) ------- */
-#if defined(SC_PLATFORM_LINUX) || defined(SC_PLATFORM_MACOS)
-#include <pthread.h>
-#define _SC_MTX_T          pthread_mutex_t
-#define _SC_MTX_INIT(m)    pthread_mutex_init(m, NULL)
-#define _SC_MTX_LOCK(m)    pthread_mutex_lock(m)
-#define _SC_MTX_UNLOCK(m)  pthread_mutex_unlock(m)
-#define _SC_MTX_DESTROY(m) pthread_mutex_destroy(m)
-#elif defined(SC_PLATFORM_WINDOWS)
-#define _SC_MTX_T          CRITICAL_SECTION
-#define _SC_MTX_INIT(m)    InitializeCriticalSection(m)
-#define _SC_MTX_LOCK(m)    EnterCriticalSection(m)
-#define _SC_MTX_UNLOCK(m)  LeaveCriticalSection(m)
-#define _SC_MTX_DESTROY(m) DeleteCriticalSection(m)
-#else
-#define _SC_MTX_T          int
-#define _SC_MTX_INIT(m)    (*(m) = 0)
-#define _SC_MTX_LOCK(m)    ((void)0)
-#define _SC_MTX_UNLOCK(m)  ((void)0)
-#define _SC_MTX_DESTROY(m) ((void)0)
-#endif
-
-/* ---- Internal context ------------------------------------------------- */
+/* ---- Internal constants and context (visible to all backends) --------- */
 #define _SC_MAX_2D_VERTS  65536
 #define _SC_MAX_2D_CMDS   8192
 
@@ -552,6 +520,38 @@ struct SCGfxContext {
 
     SCGfxFrameStats frame_stats;
 };
+
+/* -------------------------------------------------------------------------
+ * Implementation (software rasteriser only – other backends link separately)
+ * ---------------------------------------------------------------------- */
+#ifdef SC_GFX_IMPLEMENTATION
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+
+/* ---- Platform mutex abstraction (used when thread_safe is true) ------- */
+#if defined(SC_PLATFORM_LINUX) || defined(SC_PLATFORM_MACOS)
+#include <pthread.h>
+#define _SC_MTX_T          pthread_mutex_t
+#define _SC_MTX_INIT(m)    pthread_mutex_init(m, NULL)
+#define _SC_MTX_LOCK(m)    pthread_mutex_lock(m)
+#define _SC_MTX_UNLOCK(m)  pthread_mutex_unlock(m)
+#define _SC_MTX_DESTROY(m) pthread_mutex_destroy(m)
+#elif defined(SC_PLATFORM_WINDOWS)
+#define _SC_MTX_T          CRITICAL_SECTION
+#define _SC_MTX_INIT(m)    InitializeCriticalSection(m)
+#define _SC_MTX_LOCK(m)    EnterCriticalSection(m)
+#define _SC_MTX_UNLOCK(m)  LeaveCriticalSection(m)
+#define _SC_MTX_DESTROY(m) DeleteCriticalSection(m)
+#else
+#define _SC_MTX_T          int
+#define _SC_MTX_INIT(m)    (*(m) = 0)
+#define _SC_MTX_LOCK(m)    ((void)0)
+#define _SC_MTX_UNLOCK(m)  ((void)0)
+#define _SC_MTX_DESTROY(m) ((void)0)
+#endif
 
 /* ---- Safe float→u8 color conversion (bug #4: clamp before truncation) - */
 SC_INLINE u8 _sc_f32_to_u8(f32 v) {
@@ -720,9 +720,6 @@ void sc_gfx_shutdown(SCGfxContext *ctx) {
 }
 
 SCGfxBuffer sc_gfx_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
-    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
-    SCGfxBuffer h = {id};
-    if (id == 0) return h;
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         return sc_vulkan_make_buffer(ctx, desc);
@@ -743,7 +740,12 @@ SCGfxBuffer sc_gfx_make_buffer(SCGfxContext *ctx, const SCGfxBufferDesc *desc) {
         return sc_wgpu_make_buffer(ctx, desc);
     }
 #endif
-    if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
+    /* Software backend: slot is allocated here (hardware backends allocate
+       their own slot in the backend-specific make_* function). */
+    u32 id = _sc_gfx_alloc_slot(ctx->buf_slots, SC_GFX_MAX_BUFFERS, &ctx->buf_free_head);
+    SCGfxBuffer h = {id};
+    if (id == 0) return h;
+    if (desc) {
         _SCBufData *bd = &ctx->buf_data[id];
         bd->type = desc->type;
         bd->size = desc->size;
@@ -938,9 +940,6 @@ void sc_gfx_destroy_texture(SCGfxContext *ctx, SCGfxTexture tex) {
 }
 
 SCGfxShader sc_gfx_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
-    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
-    SCGfxShader h = {id};
-    if (id == 0) return h;
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         return sc_vulkan_make_shader(ctx, desc);
@@ -961,7 +960,11 @@ SCGfxShader sc_gfx_make_shader(SCGfxContext *ctx, const SCGfxShaderDesc *desc) {
         return sc_wgpu_make_shader(ctx, desc);
     }
 #endif
-    if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
+    /* Software backend */
+    u32 id = _sc_gfx_alloc_slot(ctx->shd_slots, SC_GFX_MAX_SHADERS, &ctx->shd_free_head);
+    SCGfxShader h = {id};
+    if (id == 0) return h;
+    if (desc) {
         ctx->shd_desc[id] = *desc;
     }
     return h;
@@ -996,9 +999,6 @@ void sc_gfx_destroy_shader(SCGfxContext *ctx, SCGfxShader shd) {
 }
 
 SCGfxPipeline sc_gfx_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *desc) {
-    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
-    SCGfxPipeline h = {id};
-    if (id == 0) return h;
 #ifdef SC_GFX_BACKEND_VULKAN
     if (ctx->backend == SC_BACKEND_VULKAN) {
         return sc_vulkan_make_pipeline(ctx, desc);
@@ -1019,7 +1019,11 @@ SCGfxPipeline sc_gfx_make_pipeline(SCGfxContext *ctx, const SCGfxPipelineDesc *d
         return sc_wgpu_make_pipeline(ctx, desc);
     }
 #endif
-    if (ctx->backend == SC_BACKEND_SOFTWARE && desc) {
+    /* Software backend */
+    u32 id = _sc_gfx_alloc_slot(ctx->pip_slots, SC_GFX_MAX_PIPELINES, &ctx->pip_free_head);
+    SCGfxPipeline h = {id};
+    if (id == 0) return h;
+    if (desc) {
         ctx->pip_desc[id] = *desc;
     }
     return h;
