@@ -162,22 +162,23 @@ jobs:
                 }
               });
             } catch (e) { console.log('annotation create failed:', e.message); }
-      - name: Push crash dump to ci-crash-debug branch
+      - name: Emit Metal crash detail as annotations
         if: failure()
+        shell: bash
         run: |
-          mkdir -p /tmp/crashdump
-          cp /tmp/mtl_out.txt /tmp/crashdump/mtl_out.txt 2>/dev/null || true
-          cp /Users/runner/Library/Logs/DiagnosticReports/*test_metal* /tmp/crashdump/ 2>/dev/null || true
-          cp /Users/runner/Library/Logs/DiagnosticReports/*test_gfx* /tmp/crashdump/ 2>/dev/null || true
-          ls -la /tmp/crashdump
-          cd "$GITHUB_WORKSPACE"
-          git config user.name "ci"
-          git config user.email "ci@ci"
-          git checkout -B ci-crash-debug
-          cp /tmp/crashdump/* .
-          git add -A
-          git commit -m "ci crash dump $(date +%s)" || true
-          git push origin ci-crash-debug --force || echo "PUSH FAILED"
+          emit() {
+            local f="$1" tag="$2"
+            if [ ! -s "$f" ]; then echo "::error title=metal $tag::(no file $f)"; return; fi
+            echo "::error title=metal $tag: $(head -c 200 "$f")::"
+            head -c 80000 "$f" | fold -s -w 220 | while IFS= read -r line; do
+              printf '%s\n' "$line" | sed 's/%/%25/g' | sed 's/\r/%0D/g'
+              printf '::error::%s\n' "$(printf '%s\n' "$line" | sed 's/%/%25/g' | sed 's/\r/%0D/g')"
+            done
+          }
+          emit /tmp/mtl_out.txt "stdout"
+          for f in /Users/runner/Library/Logs/DiagnosticReports/*test_metal* /Users/runner/Library/Logs/DiagnosticReports/*test_gfx*; do
+            [ -f "$f" ] && emit "$f" "crash-report"
+          done
 
   wasm:
     runs-on: ubuntu-latest
